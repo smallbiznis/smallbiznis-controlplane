@@ -3,7 +3,7 @@ package domain
 import (
 	"time"
 
-	domainv1 "github.com/smallbiznis/go-genproto/smallbiznis/domain/v1"
+	domainv1 "github.com/smallbiznis/go-genproto/smallbiznis/controlplane/domain/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 

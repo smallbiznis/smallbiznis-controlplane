@@ -1,4 +1,4 @@
-package tenant
+package license
 
 import (
 	"context"
@@ -8,18 +8,18 @@ import (
 	"smallbiznis-controlplane/services/internal/endpoint"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	tenantv1 "github.com/smallbiznis/go-genproto/smallbiznis/controlplane/tenant/v1"
+	licensev1 "github.com/smallbiznis/go-genproto/smallbiznis/controlplane/license/v1"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-var Module = fx.Module("tenant.module",
+var Module = fx.Module("license.module",
 	fx.Provide(NewService),
 )
 
-var ServerModule = fx.Module("tenant.server",
+var ServerModule = fx.Module("license.server",
 	Module,
 	fx.Invoke(
 		registerServiceServer,
@@ -28,7 +28,7 @@ var ServerModule = fx.Module("tenant.server",
 )
 
 func registerServiceServer(server *grpc.Server, service *Service) {
-	tenantv1.RegisterTenantServiceServer(server, service)
+	licensev1.RegisterLicenseServiceServer(server, service)
 }
 
 type registerServiceHandlerParams struct {
@@ -51,12 +51,12 @@ func registerServiceHandlerFromEndpoint(p registerServiceHandlerParams) {
 				grpc.WithBlock(),
 			}
 
-			if err := tenantv1.RegisterTenantServiceHandlerFromEndpoint(ctx, p.Mux, target, opts); err != nil {
-				zap.L().Error("failed to register tenant http handler", zap.Error(err))
+			if err := licensev1.RegisterLicenseServiceHandlerFromEndpoint(ctx, p.Mux, target, opts); err != nil {
+				zap.L().Error("failed to register license http handler", zap.Error(err))
 				return err
 			}
 
-			zap.L().Info("tenant http handler registered", zap.String("endpoint", target))
+			zap.L().Info("license http handler registered", zap.String("endpoint", target))
 			return nil
 		},
 	})
