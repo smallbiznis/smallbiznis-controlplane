@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 
@@ -15,10 +14,12 @@ var Module = fx.Module("httpapi",
 )
 
 func registerHealthEndpoint(mux *runtime.ServeMux) {
-	if err := mux.HandlePath(http.MethodGet, "/healthz", func(ctx context.Context, w http.ResponseWriter, _ *http.Request, _ map[string]string) {
+	handler := func(w http.ResponseWriter, _ *http.Request, _ map[string]string) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	}); err != nil {
+	}
+
+	if err := mux.HandlePath(http.MethodGet, "/healthz", handler); err != nil {
 		zap.L().Error("failed to register health endpoint", zap.Error(err))
 	}
 }
