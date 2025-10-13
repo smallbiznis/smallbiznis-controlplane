@@ -1,0 +1,104 @@
+name: Service CI and Deploy
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  detect-services:
+    name: Detect changed services
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.collect.outputs.services }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Collect changed services
+        id: collect
+        run: |
+          set -eo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE_SHA="${{ github.event.before }}"
+          fi
+
+          if [[ -z "$BASE_SHA" ]]; then
+            echo "Unable to determine base commit; defaulting to HEAD^" >&2
+            BASE_SHA="${{ github.sha }}^"
+          fi
+
+          echo "Determining changes between $BASE_SHA and ${{ github.sha }}"
+          CHANGED_FILES=$(git diff --name-only "$BASE_SHA" "${{ github.sha }}")
+
+          if [[ -z "$CHANGED_FILES" ]]; then
+            echo "services=[]" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          mapfile -t SERVICES < <(printf '%s\n' "$CHANGED_FILES" \
+            | grep -E '^(services|cmd)/' \
+            | cut -d'/' -f2 \
+            | sort -u || true)
+
+          if [[ ${#SERVICES[@]} -eq 0 ]]; then
+            echo "No service directories changed."
+            echo "services=[]" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          SERVICES_JSON=$(printf '%s\n' "${SERVICES[@]}" | jq -R . | jq -s 'unique')
+          echo "Detected services: $SERVICES_JSON"
+          echo "services=$SERVICES_JSON" >> "$GITHUB_OUTPUT"
+
+  service-jobs:
+    name: Service jobs
+    needs: detect-services
+    if: ${{ needs.detect-services.outputs.services != '[]' }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: ${{ fromJSON(needs.detect-services.outputs.services) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Run unit tests
+        run: |
+          set -eo pipefail
+          SERVICE_DIR="services/${{ matrix.service }}"
+          if [[ -d "$SERVICE_DIR" ]]; then
+            echo "Running unit tests for $SERVICE_DIR"
+            go test "./$SERVICE_DIR/..."
+          else
+            echo "No service package at $SERVICE_DIR; skipping tests."
+          fi
+
+      - name: Build command
+        run: |
+          set -eo pipefail
+          CMD_DIR="cmd/${{ matrix.service }}"
+          if [[ -d "$CMD_DIR" ]]; then
+            echo "Building command in $CMD_DIR"
+            go build "./$CMD_DIR"
+          else
+            echo "No command directory at $CMD_DIR; skipping build."
+          fi
+
+      - name: Deploy service
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        env:
+          SERVICE_NAME: ${{ matrix.service }}
+        run: |
+          echo "Deploying $SERVICE_NAME"
+          echo "# TODO: Replace with real deployment steps for $SERVICE_NAME"
