@@ -2,7 +2,6 @@ package config
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -126,7 +125,7 @@ func LoadConfig(p Params) *Config {
 	config.SetConfigType("yaml")
 	config.AddConfigPath(".")
 
-	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	config.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	config.AutomaticEnv()
 
 	if err := config.ReadInConfig(); err != nil {
@@ -171,7 +170,7 @@ func LoadConfig(p Params) *Config {
 
 func LoadRemote(p Params) *Config {
 	if p.Vault == nil {
-		fmt.Errorf("vault can't provide")
+		zap.L().Error("vault can't provide")
 		os.Exit(1)
 	}
 

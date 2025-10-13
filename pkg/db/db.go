@@ -2,7 +2,7 @@ package db
 
 import (
 	"context"
-	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -15,6 +15,7 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 	"gorm.io/plugin/prometheus"
 )
 
@@ -23,32 +24,45 @@ var Module = fx.Module("database",
 		Dialect,
 		New,
 	),
-	fx.Invoke(RegisterConnectionPool),
+	// fx.Invoke(RegisterConnectionPool),
 )
 
-func New(cfg *config.Config, dialector gorm.Dialector, opts ...gorm.Option) (*gorm.DB, error) {
+func New(cfg *config.Config, dialector gorm.Dialector, opts ...gorm.Option) *gorm.DB {
 	var db *gorm.DB
 	var err error
 
+	var logLevel logger.LogLevel
+	var showSQL bool
+
+	if cfg.AppEnv == "production" {
+		logLevel = logger.Warn
+		showSQL = false
+	} else {
+		logLevel = logger.Info
+		showSQL = true
+	}
+
+	gormLogger := NewZapGormLogger(zap.L(), logLevel, showSQL)
+
 	for i := 0; i < 5; i++ {
-		db, err = gorm.Open(dialector, opts...)
+		db, err = gorm.Open(dialector, &gorm.Config{
+			Logger: gormLogger,
+		})
 		if err == nil {
 			break
 		}
-		zap.L().Warn("Database not ready, retrying in 3 seconds... ", zap.Int("retry", i+1), zap.Error(err))
+		zap.L().Warn("[DB] Database not ready, retrying in 3 seconds... ", zap.Int("retry", i+1), zap.Error(err))
 		time.Sleep(3 * time.Second)
 	}
 
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		zap.L().Error("[DB] Failed to connect to database", zap.Error(err))
+		os.Exit(1)
 	}
 
-	if cfg.AppEnv != "production" {
-		db = db.Debug()
-		zap.L().Info("[DB] 🔍 Database is running in DEBUG mode")
-	}
+	zap.L().Info("[DB] ✅ Database connection successfully configured.")
 
-	return db, nil
+	return db
 }
 
 func NewTest() (*gorm.DB, error) {
@@ -60,26 +74,38 @@ func NewTest() (*gorm.DB, error) {
 	return db, nil
 }
 
-func RegisterConnectionPool(lc fx.Lifecycle, cfg *config.Config, db *gorm.DB) error {
-	sqlDB, err := db.DB()
-	if err != nil {
-		return err
+type connectionPoolParams struct {
+	fx.In
+	Lifecycle fx.Lifecycle
+	DB        *gorm.DB
+	Config    *config.Config
+}
+
+func RegisterConnectionPool(p connectionPoolParams) {
+	if p.DB == nil {
+		zap.L().Error("[DB] Skipping connection pool setup (no db instance)")
+		os.Exit(1)
 	}
 
-	sqlDB.SetMaxIdleConns(cfg.Database.ConnectionPool.MaxIdleConn)
-	sqlDB.SetMaxOpenConns(cfg.Database.ConnectionPool.MaxOpenConns)
-	sqlDB.SetConnMaxLifetime(cfg.Database.ConnectionPool.ConnMaxLifetime)
-	sqlDB.SetConnMaxIdleTime(cfg.Database.ConnectionPool.ConnMaxIdleTime)
+	sqlDB, err := p.DB.DB()
+	if err != nil {
+		zap.L().Error("[DB] ❌ Failed to get sql.DB from gorm", zap.Error(err))
+		os.Exit(1)
+	}
+
+	cp := p.Config.Database.ConnectionPool
+	sqlDB.SetMaxIdleConns(cp.MaxIdleConn)
+	sqlDB.SetMaxOpenConns(cp.MaxOpenConns)
+	sqlDB.SetConnMaxLifetime(cp.ConnMaxLifetime)
+	sqlDB.SetConnMaxIdleTime(cp.ConnMaxIdleTime)
 
 	zap.L().Info("[DB] ✅ Database connection successfully configured with connection pooling.")
-	lc.Append(fx.Hook{
+	p.Lifecycle.Append(fx.Hook{
 		OnStop: func(ctx context.Context) error {
 			zap.L().Info("[DB] Closing connection pool...")
 			return sqlDB.Close()
 		},
 	})
-
-	return nil
 }
 
 // func RegisterAuditHooks(db *gorm.DB) {
@@ -90,7 +116,7 @@ func RegisterConnectionPool(lc fx.Lifecycle, cfg *config.Config, db *gorm.DB) er
 func Otel(db *gorm.DB) error {
 	// Register the OpenTelemetry plugin with GORM
 	if err := db.Use(otelgorm.NewPlugin()); err != nil {
-		zap.L().Fatal("❌ Failed to register db telemetry", zap.Error(err))
+		zap.L().Error("❌ Failed to register db telemetry", zap.Error(err))
 		return err
 	}
 
@@ -110,7 +136,7 @@ func Metric(db *gorm.DB) error {
 			},
 		}, // user defined metrics
 	})); err != nil {
-		zap.L().Fatal("❌ Failed to register db metrics", zap.Error(err))
+		zap.L().Error("❌ Failed to register db metrics", zap.Error(err))
 		return err
 	}
 	return nil

@@ -1,12 +1,11 @@
 package logger
 
 import (
-	"os"
-
 	"smallbiznis-controlplane/pkg/config"
 
 	"go.uber.org/fx"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 var Module = fx.Module("zap",
@@ -15,25 +14,41 @@ var Module = fx.Module("zap",
 	),
 )
 
-func defaultOption(cfg *config.Config) []zap.Field {
-	return []zap.Field{
-		zap.String("environment", cfg.AppEnv),
-		zap.String("service_name", cfg.AppName),
-		zap.String("service_namespace", cfg.AppNamespace),
-	}
+type ConfigParams struct {
+	fx.In
+	Cfg *config.Config
 }
 
-func New(cfg *config.Config) *zap.Logger {
+func New(p ConfigParams) *zap.Logger {
 
 	log := zap.Must(zap.NewDevelopment())
-	if os.Getenv("ENV") == "production" {
-		log = zap.Must(zap.NewProduction())
+	if p.Cfg.AppEnv == "production" {
+
+		config := zap.NewProductionConfig()
+		config.EncoderConfig.TimeKey = "timestamp"
+		config.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+		config.EncoderConfig.StacktraceKey = "stacktrace"
+		config.EncoderConfig.LevelKey = "severity"
+		config.EncoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
+		config.EncoderConfig.CallerKey = "caller"
+		config.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
+		config.Encoding = "json"
+		config.OutputPaths = []string{"stdout"}
+		config.ErrorOutputPaths = []string{"stderr"}
+
+		var err error
+		log, err = config.Build()
+		if err != nil {
+			panic(err)
+		}
+
+		defer log.Sync()
 	}
 
-	if cfg != nil {
+	if p.Cfg != nil {
 		log = log.With(
-			zap.String("app.env", cfg.AppEnv),
-			zap.String("app.name", cfg.AppName),
+			zap.String("env", p.Cfg.AppEnv),
+			zap.String("service_name", p.Cfg.AppName),
 		)
 	}
 

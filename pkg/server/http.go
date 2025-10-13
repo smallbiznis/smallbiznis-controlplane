@@ -42,6 +42,10 @@ func TenatIDAnnotator(ctx context.Context, req *http.Request) metadata.MD {
 	return md
 }
 
+func RegisterServerMux() *runtime.ServeMux {
+	return runtime.NewServeMux()
+}
+
 type Params struct {
 	fx.In
 	Config  *config.Config
@@ -50,7 +54,6 @@ type Params struct {
 
 func NewHttpServer(p Params) *Server {
 	cfg := p.Config
-	zap.L().Info("HTTP config loaded", zap.String("addr", cfg.Server.Addr))
 	srv := &Server{
 		server: &http.Server{
 			Addr:         fmt.Sprintf(":%s", cfg.Server.Addr),

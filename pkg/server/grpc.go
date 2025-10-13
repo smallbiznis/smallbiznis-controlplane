@@ -9,7 +9,6 @@ import (
 	"smallbiznis-controlplane/pkg/config"
 
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/validator"
-	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
@@ -25,11 +24,8 @@ var ProvideGRPCServer = fx.Module("grpc.server",
 		NewListener,
 		WithOption,
 		NewGRPCServer,
-		NewServeMux,
 	),
-	fx.Invoke(
-		StartGRPCServer,
-	),
+	fx.Invoke(StartGrpcServer),
 )
 
 func NewListener(cfg *config.Config) (net.Listener, error) {
@@ -78,15 +74,20 @@ func WithTLS(tls *tls.Certificate) grpc.ServerOption {
 	)
 }
 
-func NewServeMux() *runtime.ServeMux {
-	return runtime.NewServeMux()
-}
-
 func NewGRPCServer(opts ...grpc.ServerOption) *grpc.Server {
 	return grpc.NewServer(opts...)
 }
 
-func StartGRPCServer(lc fx.Lifecycle, lis net.Listener, srv *grpc.Server) {
+type grpcParams struct {
+	fx.In
+
+	Lifecycle      fx.Lifecycle
+	Listener       net.Listener
+	TraceProvider  trace.TracerProvider
+	MetricProvider metric.MeterProvider
+}
+
+func StartGrpcServer(lc fx.Lifecycle, srv *grpc.Server, lis net.Listener) {
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
 			go func() {
