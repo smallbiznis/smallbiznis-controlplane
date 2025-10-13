@@ -27,17 +27,21 @@ import (
 
 type Service struct {
 	db     *gorm.DB
-	asynq  *asynq.Client
+	asynq  Enqueuer
 	node   *snowflake.Node
 	config *config.Config
 	repo   repository.Repository[Tenant]
 	tenantv1.UnimplementedTenantServiceServer
 }
 
+type Enqueuer interface {
+	Enqueue(task *asynq.Task, opts ...asynq.Option) (*asynq.TaskInfo, error)
+}
+
 type ServiceParams struct {
 	fx.In
 	DB     *gorm.DB
-	Asynq  *asynq.Client
+	Asynq  Enqueuer
 	Node   *snowflake.Node
 	Config *config.Config
 }

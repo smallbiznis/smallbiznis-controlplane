@@ -90,8 +90,7 @@ func (s *Service) GetDomain(ctx context.Context, req *domainv1.GetDomainRequest)
 		return nil, status.Error(codes.InvalidArgument, "domain_id is required")
 	}
 
-	var domain Domain
-	exist, err := s.repo.FindOne(ctx, &Domain{
+	domain, err := s.repo.FindOne(ctx, &Domain{
 		ID: req.GetDomainId(),
 	})
 	if err != nil {
@@ -99,7 +98,7 @@ func (s *Service) GetDomain(ctx context.Context, req *domainv1.GetDomainRequest)
 		return nil, status.Errorf(codes.Internal, "failed to get domain: %v", err)
 	}
 
-	if exist == nil {
+	if domain == nil {
 		return nil, status.Error(codes.NotFound, "domain not found")
 	}
 

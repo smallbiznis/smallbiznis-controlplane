@@ -73,12 +73,17 @@ type Domain struct {
 }
 
 func (m *Domain) ToProto() *domainv1.Domain {
+	var verificationCode string
+	if m.VerificationCode != nil {
+		verificationCode = *m.VerificationCode
+	}
+
 	return &domainv1.Domain{
 		DomainId:         m.ID,
 		TenantId:         m.TenantID,
 		Hostname:         m.Hostname,
 		Verified:         m.Verified,
-		VerificationCode: *m.VerificationCode,
+		VerificationCode: verificationCode,
 		CreatedAt:        timestamppb.New(m.CreatedAt),
 	}
 }
