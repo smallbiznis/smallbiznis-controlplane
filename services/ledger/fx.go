@@ -1,4 +1,4 @@
-package domain
+package ledger
 
 import (
 	"context"
@@ -7,23 +7,23 @@ import (
 	"smallbiznis-controlplane/pkg/config"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	domainv1 "github.com/smallbiznis/go-genproto/smallbiznis/controlplane/domain/v1"
+	ledgerv1 "github.com/smallbiznis/go-genproto/smallbiznis/ledger/v1"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 )
 
-var Module = fx.Module("domain.service",
+var Module = fx.Module("ledger.service",
 	fx.Provide(NewService),
 	fx.Invoke(registerServiceServer),
 )
 
-var Gateway = fx.Module("domain.gateway",
+var Gateway = fx.Module("ledger.gateway",
 	fx.Invoke(registerServiceHandlerServer),
 )
 
 func registerServiceServer(server *grpc.Server, service *Service) {
-	domainv1.RegisterDomainServiceServer(server, service)
+	ledgerv1.RegisterLedgerServiceServer(server, service)
 }
 
 type registerServiceHandlerParams struct {
@@ -41,7 +41,7 @@ func registerServiceHandlerServer(p registerServiceHandlerParams) {
 			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
 
-			if err := domainv1.RegisterDomainServiceHandlerServer(ctx, p.Mux, p.Service); err != nil {
+			if err := ledgerv1.RegisterLedgerServiceHandlerServer(ctx, p.Mux, p.Service); err != nil {
 				zap.L().Error("failed to register tenant http handler", zap.Error(err))
 				return err
 			}

@@ -1,8 +1,9 @@
-package license
+package apikey
 
 import (
+	"smallbiznis-controlplane/pkg/repository"
+
 	"github.com/bwmarrin/snowflake"
-	licensev1 "github.com/smallbiznis/go-genproto/smallbiznis/controlplane/license/v1"
 	"go.uber.org/fx"
 	"gorm.io/gorm"
 )
@@ -10,7 +11,7 @@ import (
 type Service struct {
 	db   *gorm.DB
 	node *snowflake.Node
-	licensev1.UnimplementedLicenseServiceServer
+	repo repository.Repository[APIKey]
 }
 
 type ServiceParams struct {
@@ -23,5 +24,6 @@ func NewService(p ServiceParams) *Service {
 	return &Service{
 		db:   p.DB,
 		node: p.Node,
+		repo: repository.ProvideStore[APIKey](p.DB),
 	}
 }

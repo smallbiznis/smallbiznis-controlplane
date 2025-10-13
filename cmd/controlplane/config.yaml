@@ -1,0 +1,97 @@
+
+PLATFORM:
+  SLUG: smallbiznis
+  NAME: SmallBiznis
+  COUNTRY_CODE: ID
+  TIMEZONE: Asia/Jakarta
+  ENVIRONMENT:
+    DEVELOPMENT:
+      HOST: dev.smallbiznis.test
+    STAGING:
+      HOST: staging.smallbiznis.test
+    PRODUCTION:
+      HOST: smallbiznis.com
+
+APP_ENV: development # development, staging, production
+APP_NAME: control-plane # required
+
+ROOT_DOMAIN: dev.smallbiznisapis.test # required
+APP_DOMAIN: smallbiznis.test
+# APP_NAMESPACE: default # required on k8s
+
+HTTP_SERVER:
+  ADDR: 4318
+  READ_TIMEOUT: 30s
+  WRITE_TIMEOUT: 10s
+  IDLE_TIMEOUT: 10s
+  TLS:
+    ENABLE: false
+
+GRPC_SERVER:
+  ADDR: '4317'
+  READ_TIMEOUT: 30s
+  WRITE_TIMEOUT: 10s
+  IDLE_TIMEOUT: 10s
+  TLS:
+    ENABLE: false
+
+HTTP_CLIENT:
+  DEBUG: false
+
+SECRET_AES:
+
+DATABASE:
+  TYPE: postgres
+  HOST: postgres
+  PORT: '5432'
+  USER: postgres
+  PASSWORD: 35411231
+  DBNAME: postgres
+  SSLMODE: disable # disable, enable
+  TIMEZONE: UTC # Local, Asia/Jakarta etc
+  CONNECTION_POOL:
+    MAX_IDLE_CONN: 10
+    MAX_OPEN_CONNS: 100
+    CONN_MAX_LIFETIME: 1h
+    CONN_MAX_IDLE_TIME: 1h
+
+REDIS:
+  ADDR: redis:6379
+  PASSWORD: ''
+  DB: 0
+  POOL_SIZE: 10
+  POOL_TIMEOUT: 30s
+
+SESSION:
+  NAME: _SID # default _SID
+  TYPE: cookie # cookie, redis
+  ADDR: redis:6379
+  USERNAME: redis
+  PASSWORD: redis
+  SECRET: 
+
+ACCESS_CONTROL:
+  ADAPTER: file
+  MODEL: conf/model.conf
+  POLICY: 
+
+FLAGSMITH:
+  API_KEY: 
+
+MINIO:
+  ENDPOINT: minio:8000
+  ACCESS_KEY: developmentkey
+  SECRET_KEY: developmentsecret
+  BUCKET_NAME: development
+  SECURE: false # true, false
+  REGION: us-east-1
+
+TEMPORAL:
+  ADDR: localhost:7233
+  NAMESPACE: default
+
+PYROSCOPE:
+  ADDR: http://localhost:4040
+
+RULE_ENGINE_URL: localhost:4317
+LEDGER_URL: localhost:4317

@@ -11,15 +11,12 @@ import (
 	"go.uber.org/fx/fxevent"
 	"go.uber.org/zap"
 
-	"smallbiznis-controlplane/pkg/asynq"
 	"smallbiznis-controlplane/pkg/config"
 	"smallbiznis-controlplane/pkg/db"
 	"smallbiznis-controlplane/pkg/httpapi"
 	"smallbiznis-controlplane/pkg/logger"
-	"smallbiznis-controlplane/pkg/redis"
 	"smallbiznis-controlplane/pkg/server"
-	"smallbiznis-controlplane/services/domain"
-	"smallbiznis-controlplane/services/tenant"
+	"smallbiznis-controlplane/services/ledger"
 )
 
 func main() {
@@ -27,8 +24,6 @@ func main() {
 		config.Module,
 		logger.Module,
 		db.Module,
-		redis.Module,
-		asynq.Client,
 		fx.Provide(
 			server.RegisterServerMux,
 			provideTracerProvider,
@@ -36,10 +31,8 @@ func main() {
 			provideSnowflakeNode,
 		),
 		httpapi.Module,
-		tenant.Module,
-		tenant.Gateway,
-		domain.Module,
-		domain.Gateway,
+		ledger.Module,
+		ledger.Gateway,
 		server.ProvideGRPCServer,
 		server.ProvideHTTPServer,
 		fxLogger,

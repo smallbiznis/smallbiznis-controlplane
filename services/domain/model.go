@@ -65,7 +65,7 @@ type Domain struct {
 	Type               DomainType             `gorm:"column:type"`
 	Hostname           string                 `gorm:"column:hostname"`
 	VerificationMethod VerificationMethodType `gorm:"column:verification_method"`
-	VerificationCode   string                 `gorm:"column:verification_code"`
+	VerificationCode   *string                `gorm:"column:verification_code"`
 	CertificateStatus  CertificateStatusType  `gorm:"column:certificate_status"`
 	Verified           bool                   `gorm:"column:verified"`
 	VerifiedAt         *time.Time             `gorm:"column:verified_at"`
@@ -78,7 +78,7 @@ func (m *Domain) ToProto() *domainv1.Domain {
 		TenantId:         m.TenantID,
 		Hostname:         m.Hostname,
 		Verified:         m.Verified,
-		VerificationCode: m.VerificationCode,
+		VerificationCode: *m.VerificationCode,
 		CreatedAt:        timestamppb.New(m.CreatedAt),
 	}
 }

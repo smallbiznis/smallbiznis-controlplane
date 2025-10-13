@@ -1,8 +1,7 @@
-package license
+package loyalty
 
 import (
 	"github.com/bwmarrin/snowflake"
-	licensev1 "github.com/smallbiznis/go-genproto/smallbiznis/controlplane/license/v1"
 	"go.uber.org/fx"
 	"gorm.io/gorm"
 )
@@ -10,7 +9,6 @@ import (
 type Service struct {
 	db   *gorm.DB
 	node *snowflake.Node
-	licensev1.UnimplementedLicenseServiceServer
 }
 
 type ServiceParams struct {

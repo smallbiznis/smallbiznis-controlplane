@@ -5,14 +5,12 @@ import (
 	"time"
 
 	"smallbiznis-controlplane/pkg/config"
-	"smallbiznis-controlplane/services/internal/endpoint"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	licensev1 "github.com/smallbiznis/go-genproto/smallbiznis/controlplane/license/v1"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 var Module = fx.Module("license.module",
@@ -37,6 +35,7 @@ type registerServiceHandlerParams struct {
 	Lifecycle fx.Lifecycle
 	Mux       *runtime.ServeMux
 	Config    *config.Config
+	Service   *Service
 }
 
 func registerServiceHandlerFromEndpoint(p registerServiceHandlerParams) {
@@ -45,18 +44,11 @@ func registerServiceHandlerFromEndpoint(p registerServiceHandlerParams) {
 			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
 
-			target := endpoint.Normalize(p.Config.Grpc.Addr)
-			opts := []grpc.DialOption{
-				grpc.WithTransportCredentials(insecure.NewCredentials()),
-				grpc.WithBlock(),
-			}
-
-			if err := licensev1.RegisterLicenseServiceHandlerFromEndpoint(ctx, p.Mux, target, opts); err != nil {
+			if err := licensev1.RegisterLicenseServiceHandlerServer(ctx, p.Mux, p.Service); err != nil {
 				zap.L().Error("failed to register license http handler", zap.Error(err))
 				return err
 			}
 
-			zap.L().Info("license http handler registered", zap.String("endpoint", target))
 			return nil
 		},
 	})

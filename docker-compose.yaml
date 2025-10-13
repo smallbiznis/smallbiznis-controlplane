@@ -1,0 +1,61 @@
+name: smallbiznis
+
+services:
+  controlplane:
+    build:
+      context: .
+      dockerfile: ./cmd/controlplane/Dockerfile
+    container_name: controlplane
+    restart: unless-stopped
+    volumes:
+      - ./cmd/controlplane/config.yaml:/app/config.yaml
+
+  ledger:
+    build:
+      context: .
+      dockerfile: ./cmd/ledger/Dockerfile
+    container_name: ledger
+    restart: unless-stopped
+    volumes:
+      - ./cmd/ledger/config.yaml:/app/config.yaml
+
+  rule:
+    build:
+      context: .
+      dockerfile: ./cmd/rule/Dockerfile
+    container_name: rule
+    restart: unless-stopped
+    volumes:
+      - ./cmd/rule/config.yaml:/app/config.yaml
+
+  loyalty:
+    build:
+      context: .
+      dockerfile: ./cmd/loyalty/Dockerfile
+    container_name: loyalty
+    restart: unless-stopped
+    volumes:
+      - ./cmd/loyalty/config.yaml:/app/config.yaml
+
+  inventory:
+    build:
+      context: .
+      dockerfile: ./cmd/inventory/Dockerfile
+    container_name: inventory
+    restart: unless-stopped
+    volumes:
+      - ./cmd/inventory/config.yaml:/app/config.yaml
+
+  voucher:
+    build:
+      context: .
+      dockerfile: ./cmd/voucher/Dockerfile
+    container_name: voucher
+    restart: unless-stopped
+    volumes:
+      - ./cmd/voucher/config.yaml:/app/config.yaml
+
+networks:
+  default:
+    name: infra_default
+    external: true
