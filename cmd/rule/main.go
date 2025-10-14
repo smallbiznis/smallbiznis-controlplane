@@ -16,6 +16,7 @@ import (
 	"smallbiznis-controlplane/pkg/httpapi"
 	"smallbiznis-controlplane/pkg/logger"
 	"smallbiznis-controlplane/pkg/server"
+	"smallbiznis-controlplane/services/rule"
 )
 
 func main() {
@@ -32,6 +33,8 @@ func main() {
 		httpapi.Module,
 		server.ProvideGRPCServer,
 		server.ProvideHTTPServer,
+		rule.Module,
+		rule.Gateway,
 		fxLogger,
 	}
 
