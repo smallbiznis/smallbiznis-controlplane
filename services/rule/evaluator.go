@@ -2,71 +2,121 @@ package rule
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/checker/decls"
 	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
-// Evaluator evaluates CEL expressions using a dynamic set of variables.
+// Evaluator compiles and evaluates CEL expressions for rule matching.
 type Evaluator struct{}
 
-// NewEvaluator creates a new Evaluator instance.
+// NewEvaluator constructs a new Evaluator instance.
 func NewEvaluator() *Evaluator {
 	return &Evaluator{}
 }
 
-// Evaluate evaluates a CEL expression against the provided context map.
-// The context map entries are exposed as top-level variables in the CEL program.
-func (e *Evaluator) Evaluate(expression string, context map[string]any) (bool, error) {
+// Evaluate executes the provided CEL expression against the supplied context map.
+// The expression must resolve to a boolean value.
+func (Evaluator) Evaluate(expression string, ctx map[string]any) (bool, error) {
 	if expression == "" {
 		return false, fmt.Errorf("expression must not be empty")
 	}
 
-	if context == nil {
-		context = map[string]any{}
-	}
-
-	declarations := make([]*exprpb.Decl, 0, len(context))
-	for key := range context {
-		declarations = append(declarations, decls.NewVar(key, decls.Dyn))
-	}
-
-	envOpts := []cel.EnvOption{cel.Declarations(declarations...)}
-	env, err := cel.NewEnv(envOpts...)
+	env, err := cel.NewEnv(cel.Declarations(declarationsFromContext(ctx)...))
 	if err != nil {
-		return false, fmt.Errorf("failed to create CEL env: %w", err)
+		return false, fmt.Errorf("build cel env: %w", err)
 	}
 
-	ast, issues := env.Compile(expression)
+	ast, issues := env.Parse(expression)
 	if issues != nil && issues.Err() != nil {
-		return false, fmt.Errorf("failed to compile expression: %w", issues.Err())
+		return false, fmt.Errorf("parse cel expression: %w", issues.Err())
 	}
 
-	program, err := env.Program(ast)
+	checked, issues := env.Check(ast)
+	if issues != nil && issues.Err() != nil {
+		return false, fmt.Errorf("check cel expression: %w", issues.Err())
+	}
+
+	prog, err := env.Program(checked)
 	if err != nil {
-		return false, fmt.Errorf("failed to create CEL program: %w", err)
+		return false, fmt.Errorf("build cel program: %w", err)
 	}
 
-	result, _, err := program.Eval(context)
+	result, _, err := prog.Eval(ctx)
 	if err != nil {
-		return false, fmt.Errorf("failed to evaluate expression: %w", err)
+		return false, fmt.Errorf("evaluate cel expression: %w", err)
 	}
 
-	boolean, ok := result.Value().(bool)
+	boolVal, ok := result.Value().(bool)
 	if !ok {
-		return false, fmt.Errorf("expression must return a boolean, got %T", result.Value())
+		return false, fmt.Errorf("cel expression did not evaluate to boolean")
 	}
 
-	return boolean, nil
+	return boolVal, nil
 }
 
-// ExampleEvaluate demonstrates how to evaluate a rule expression.
-func ExampleEvaluate() {
-	evaluator := NewEvaluator()
-	rule := Rule{Expression: "total_spent > 100000 && user_tier == 'gold'"}
-	context := map[string]any{"total_spent": 120000, "user_tier": "gold"}
-	result, _ := evaluator.Evaluate(rule.Expression, context)
-	fmt.Println(result)
-	// Output: true
+func declarationsFromContext(ctx map[string]any) []*exprpb.Decl {
+	if len(ctx) == 0 {
+		return nil
+	}
+
+	declsOut := make([]*exprpb.Decl, 0, len(ctx))
+	for key, value := range ctx {
+		declsOut = append(declsOut, decls.NewVar(key, typeForValue(value)))
+	}
+	return declsOut
+}
+
+func typeForValue(v any) *exprpb.Type {
+	switch t := v.(type) {
+	case bool:
+		return decls.Bool
+	case int, int32, int64:
+		return decls.Int
+	case uint, uint32, uint64:
+		return decls.Uint
+	case float32, float64:
+		return decls.Double
+	case string:
+		return decls.String
+	case map[string]any:
+		return decls.NewMapType(decls.String, decls.Dyn)
+	case []any:
+		return decls.NewListType(decls.Dyn)
+	case nil:
+		return decls.Null
+	default:
+		// CEL uses double precision floats; promote NaN types accordingly.
+		if f, ok := convertNumeric(t); ok {
+			if math.IsNaN(f) {
+				return decls.Double
+			}
+		}
+		return decls.Dyn
+	}
+}
+
+func convertNumeric(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float32:
+		return float64(n), true
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case uint:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	case uint64:
+		return float64(n), true
+	default:
+		return 0, false
+	}
 }

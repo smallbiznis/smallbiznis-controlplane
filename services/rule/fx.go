@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	rulev1 "github.com/smallbiznis/smallbiznisapis/smallbiznis/rule/v1"
+	rulev1 "github.com/smallbiznis/go-genproto/smallbiznis/rule/v1"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -17,14 +17,15 @@ var Module = fx.Module("rule.service",
 		NewEvaluator,
 		NewService,
 	),
-	fx.Invoke(registerServiceServer),
+	fx.Invoke(RegisterGRPCServer),
 )
 
 var Gateway = fx.Module("rule.gateway",
 	fx.Invoke(registerServiceHandlerServer),
 )
 
-func registerServiceServer(server *grpc.Server, service *Service) {
+// RegisterGRPCServer registers the Rule service with the gRPC server.
+func RegisterGRPCServer(server *grpc.Server, service *Service) {
 	rulev1.RegisterRuleServiceServer(server, service)
 }
 
