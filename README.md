@@ -1,100 +1,86 @@
 # SmallBiznis Control Plane
 
-SmallBiznis Control Plane is the orchestration layer that stitches together tenant provisioning, domain management, identity, and downstream service integrations for the SmallBiznis platform. It is written in Go and built around gRPC/HTTP APIs, Uber Fx dependency injection, and OpenTelemetry instrumentation so the platform team can manage multi-tenant commerce workloads at scale.
+SmallBiznis Control Plane is the orchestration layer that brings together tenant provisioning, domain management, identity, and downstream integrations for the SmallBiznis platform. The services are written in Go, expose gRPC with an HTTP gateway, rely on Uber Fx for dependency injection, and ship with OpenTelemetry instrumentation so multi-tenant commerce workloads can scale reliably.
 
-## Features
+## Key Capabilities
+- Manage the tenant lifecycle while generating default domains and credentials in a single transactional flow.
+- Perform hostname verification via DNS lookups, row locking, and certificate status updates.
+- Orchestrate downstream services (ledger, loyalty, voucher, rule engine) through Asynq queues for provisioning and event-driven work.
+- Load configuration from local files, environment variables, or remote providers with Vault-backed secret injection.
+- Deliver unified observability through OpenTelemetry, Pyroscope, structured logging, and integrations with PostgreSQL, Redis, Kafka, and Temporal.
 
-- **Tenant lifecycle management** – create, list, and paginate tenants while automatically generating default domains and API credentials through a single transactional flow. 【F:services/tenant/service.go†L1-L149】
-- **Domain verification workflow** – verify hostnames via DNS lookups, lock rows to avoid race conditions, and update certificate status in the control plane database. 【F:services/domain/service.go†L1-L134】
-- **Configurable via Consul/Vault** – load configuration from local files or remote secrets stores (Consul KV + Vault) with automatic environment overrides. 【F:pkg/config/config.go†L1-L153】【F:pkg/config/config.go†L155-L236】
-- **Instrumented infrastructure** – emits traces/metrics via OpenTelemetry, queues background jobs with Asynq, and supports Redis, PostgreSQL, Kafka, and Temporal integrations. 【F:cmd/controlplane/main.go†L1-L52】【F:pkg/config/config.go†L23-L129】
-
-## Repository layout
-
+## Repository Layout
 | Path | Description |
 | --- | --- |
-| `cmd/<service>/` | Main entrypoints, Dockerfiles, and service-specific configuration. 【F:cmd/controlplane/main.go†L1-L52】|
-| `pkg/` | Shared libraries for configuration, logging, database access, Redis, HTTP/gRPC servers, security, and utilities. 【F:pkg/config/config.go†L1-L236】|
-| `services/` | Domain logic for tenants, domains, API keys, inventory, ledger, loyalty, provisioning, and more. 【F:services/tenant/service.go†L1-L149】【F:services/domain/service.go†L1-L134】|
-| `docker-compose.yaml` | Multi-service development stack that builds the control plane and companion services with shared configuration volumes. 【F:docker-compose.yaml†L1-L38】|
+| `cmd/<service>/` | Entry points for each service together with example `config.yaml` files. |
+| `pkg/` | Shared packages for configuration, database access, gRPC/HTTP servers, logging, Redis, Snowflake IDs, and the task queue. |
+| `services/` | Domain logic per module (tenant, domain, voucher, transaction, rule, etc.) including HTTP/gRPC gateways. |
+| `docker-compose.yaml` | Compose stack for the control plane and supporting services. |
+| `.env` | Sample environment variables for the observability stack (Tempo, Loki, Pyroscope, Grafana). |
+| `flow-*.mmd` | Additional diagrams in Mermaid format. |
 
-## Getting started
+## System Requirements
+- Go 1.25 or newer.
+- Docker & Docker Compose (optional, for running the full stack).
+- PostgreSQL and Redis instances (local or containerized).
+- Access to Consul and Vault when using remote configuration and secret injection.
 
-### Prerequisites
+## Quick Setup
+1. Clone the repository and switch to the workspace:
+   ```bash
+   git clone https://github.com/smallbiznis/smallbiznis-controlplane.git
+   cd smallbiznis-controlplane
+   ```
+2. Copy the configuration file when creating a local override:
+   ```bash
+   cp cmd/controlplane/config.yaml cmd/controlplane/config.local.yaml
+   ```
+   Update database, Redis, and domain settings to match your environment. The application loads `config.yaml` by default.
+3. Review `.env` if you plan to run `docker compose`; it provides shared settings for Tempo, Loki, Pyroscope, and Grafana.
 
-- Go 1.25+
-- Docker & Docker Compose (for running dependencies and optional services)
-- PostgreSQL and Redis (local instances or via Docker)
-- Access to Consul and Vault if you plan to use remote configuration
-
-### Clone and configure
-
+## Running Services
+### Go (development mode)
 ```bash
-git clone https://github.com/<your-org>/smallbiznis-controlplane.git
-cd smallbiznis-controlplane
-cp cmd/controlplane/config.yaml cmd/controlplane/config.local.yaml # adjust values for your environment
-```
-
-> The control plane expects a reachable PostgreSQL instance, Redis, and (optionally) ancillary services such as Temporal, Kafka, MinIO, and Flagsmith. Review `cmd/controlplane/config.yaml` for sample values. 【F:cmd/controlplane/config.yaml†L1-L89】
-
-### Run locally with Go
-
-```bash
-# Ensure required environment variables are exported (see configuration section below)
 go run ./cmd/controlplane
 ```
+This starts the gRPC server and HTTP gateway. Additional services such as `cmd/ledger`, `cmd/rule`, `cmd/loyalty`, or `cmd/voucher` can be launched separately when their integrations are required.
 
-This starts both the gRPC and HTTP servers defined in `server.ProvideGRPCServer` and `server.ProvideHTTPServer`, wiring dependencies through the Fx container. 【F:cmd/controlplane/main.go†L23-L48】
-
-### Run with Docker Compose
-
-The repository includes a `docker-compose.yaml` file that builds the control plane and its sibling services (ledger, rule, loyalty, inventory, voucher). Each container mounts the matching `cmd/<service>/config.yaml` file for runtime configuration.
-
+### Docker Compose
 ```bash
-docker compose up --build
+docker network create infra_default  # one-time setup if the network does not exist
+docker compose up --build controlplane ledger rule loyalty voucher
 ```
-
-All containers share the external `infra_default` network so they can talk to provisioned infrastructure. 【F:docker-compose.yaml†L1-L38】
+Each container builds the Go binary defined by `SERVICE_PATH` and mounts its configuration from `cmd/<service>/config.yaml`. Ensure external dependencies (PostgreSQL, Redis, Tempo, etc.) are reachable on the same network.
 
 ## Configuration
+- `cmd/controlplane/config.yaml` contains core settings such as `APP_ENV`, `ROOT_DOMAIN`, `DATABASE`, `REDIS`, `SESSION`, and downstream service endpoints.
+- The `ACCESS_CONTROL` section uses Casbin model/policy files for authorization.
+- Observability (`OTEL`, `PYROSCOPE`) and optional integrations (`MINIO`, `FLAGSMITH`, `TEMPORAL`) can be toggled as needed.
+- To consume remote configuration, set `REMOTE_CONFIG_PROVIDER`, `REMOTE_CONFIG_ADDR`, and `REMOTE_CONFIG_PATH`, then wire `config.RemoteModule`. Vault injects secrets (Postgres, Redis, Flagsmith, AES key) into the configuration struct at startup.
 
-Configuration is provided by Viper. By default, the control plane loads `config.yaml` from the working directory and overlays environment variables using the `FOO_BAR` naming convention for nested keys.
+## Observability & Integrations
+- **OpenTelemetry**: configure `OTEL_EXPORTER_OTLP_ENDPOINT` or populate the `OTEL` section to stream traces and metrics.
+- **Pyroscope**: set `PYROSCOPE.ADDR` to enable continuous profiling.
+- **Asynq**: queues run on Redis (`pkg/task`). Handlers in voucher and provisioning services process background jobs.
+- **Kafka & Temporal**: endpoints are configurable for event streaming and workflow coordination.
+- **Health Check**: the HTTP gateway exposes `GET /healthz`.
 
-Key settings include:
-
-- `ROOT_DOMAIN`: used to generate tenant-specific hostnames.
-- `DATABASE`: database connection details and pooling configuration.
-- `REDIS`: Redis instance for caching, queues, and session storage.
-- `ACCESS_CONTROL`: Casbin model and policy adapters for authorization.
-- `MINIO`, `FLAGSMITH`, `TEMPORAL`, `PYROSCOPE`: optional integrations.
-
-When Vault is supplied to the Fx container, secrets such as database credentials and API keys are injected at startup. Remote configuration (Consul KV) is also supported by setting the `REMOTE_CONFIG_*` environment variables before boot. 【F:pkg/config/config.go†L23-L153】【F:pkg/config/config.go†L155-L236】
-
-## Development workflow
-
-### Database migrations
-
-Migrations are not bundled, but the services rely on GORM models located in `services/*/model.go`. Apply schema changes before running the control plane.
-
-### Testing
-
-```bash
-go test ./...
-```
-
-This runs unit tests across all services and shared packages. For deterministic results, ensure dependent services (e.g., PostgreSQL, Redis) are available or mock them appropriately. 【F:services/tenant/service_test.go†L1-L200】
-
-## Observability
-
-The control plane uses OpenTelemetry for tracing and metrics. Configure `OTEL_EXPORTER_OTLP_ENDPOINT` (or set the `OTEL` section in the config file) to emit telemetry to your collector. Pyroscope support is available through the `PYROSCOPE.ADDR` setting for continuous profiling. 【F:cmd/controlplane/main.go†L29-L44】【F:pkg/config/config.go†L35-L73】
+## Development & Testing
+- Run all unit tests:
+  ```bash
+  go test ./...
+  ```
+- Target a specific package:
+  ```bash
+  go test ./services/tenant -run TestTenantService
+  ```
+- Database models live under `services/*/model.go`; apply schema changes before testing against a real database.
+- When adding new Asynq tasks, register handlers via `pkg/task` and confirm the relevant queue is provisioned.
 
 ## Contributing
-
-1. Fork the repository and create a feature branch.
-2. Make your changes along with tests.
-3. Run `go test ./...` to ensure everything passes.
-4. Submit a pull request with a detailed description of your changes and testing notes.
+- Create a feature branch from `main`.
+- Include tests with every change and run `go test ./...` before submitting.
+- Document configuration updates or required steps in the pull request description.
 
 ## License
-
-This project is proprietary to SmallBiznis. Contact the maintainers for licensing information.
+This project is proprietary to SmallBiznis. Contact the maintainers for licensing or redistribution inquiries.
