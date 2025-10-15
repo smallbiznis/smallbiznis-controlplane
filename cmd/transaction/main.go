@@ -19,13 +19,8 @@ import (
 	"smallbiznis-controlplane/pkg/sequence"
 	"smallbiznis-controlplane/pkg/server"
 	"smallbiznis-controlplane/pkg/task"
-	"smallbiznis-controlplane/services/rule"
+	"smallbiznis-controlplane/services/transaction"
 )
-
-// Codex directive:
-// Entry point for RuleService application.
-// Initialize FX app including db.Module, logger.Module, rule.Module
-// Run FX application.
 
 func main() {
 	opts := []fx.Option{
@@ -42,10 +37,10 @@ func main() {
 			provideSnowflakeNode,
 		),
 		httpapi.Module,
+		transaction.Module,
+		transaction.Gateway,
 		server.ProvideGRPCServer,
 		server.ProvideHTTPServer,
-		rule.Module,
-		rule.Gateway,
 		fxLogger,
 	}
 

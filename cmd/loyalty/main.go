@@ -15,7 +15,11 @@ import (
 	"smallbiznis-controlplane/pkg/db"
 	"smallbiznis-controlplane/pkg/httpapi"
 	"smallbiznis-controlplane/pkg/logger"
+	"smallbiznis-controlplane/pkg/redis"
+	"smallbiznis-controlplane/pkg/sequence"
 	"smallbiznis-controlplane/pkg/server"
+	"smallbiznis-controlplane/pkg/task"
+	"smallbiznis-controlplane/services/loyalty"
 )
 
 func main() {
@@ -23,6 +27,9 @@ func main() {
 		config.Module,
 		logger.Module,
 		db.Module,
+		redis.Module,
+		task.Client,
+		sequence.Module,
 		fx.Provide(
 			server.RegisterServerMux,
 			provideTracerProvider,
@@ -30,6 +37,8 @@ func main() {
 			provideSnowflakeNode,
 		),
 		httpapi.Module,
+		loyalty.Module,
+		loyalty.Gateway,
 		server.ProvideGRPCServer,
 		server.ProvideHTTPServer,
 		fxLogger,

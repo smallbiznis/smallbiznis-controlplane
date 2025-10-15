@@ -2,11 +2,14 @@ package loyalty
 
 import (
 	"github.com/bwmarrin/snowflake"
+	loyaltyv1 "github.com/smallbiznis/go-genproto/smallbiznis/loyalty/v1"
 	"go.uber.org/fx"
 	"gorm.io/gorm"
 )
 
 type Service struct {
+	loyaltyv1.UnimplementedPointServiceServer
+
 	db   *gorm.DB
 	node *snowflake.Node
 }

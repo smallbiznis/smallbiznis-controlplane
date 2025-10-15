@@ -24,7 +24,13 @@ var (
 )
 
 type Config struct {
-	TenantID     string `mapstructure:"TENANT_ID"`
+	Platform struct {
+		ID          string `mapstructure:"TENANT_ID"`
+		Name        string `mapstructure:"TENANT_NAME"`
+		CountryCode string `mapstructure:"COUNTRY_CODE"`
+		Timezone    string `mapstructure:"TIMEZONE"`
+		Domain      string `mapstructure:"DOMAIN"`
+	} `mapstructure:"PLATFORM"`
 	RootDomain   string `mapstructure:"ROOT_DOMAIN"`
 	AppEnv       string `mapstructure:"APP_ENV"`
 	AppName      string `mapstructure:"APP_NAME"`

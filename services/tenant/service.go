@@ -2,20 +2,20 @@ package tenant
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"smallbiznis-controlplane/pkg/config"
 	"smallbiznis-controlplane/pkg/db/option"
 	"smallbiznis-controlplane/pkg/db/pagination"
 	"smallbiznis-controlplane/pkg/repository"
 	"smallbiznis-controlplane/pkg/security"
+	"smallbiznis-controlplane/pkg/sequence"
+	"smallbiznis-controlplane/pkg/task"
 	"smallbiznis-controlplane/services/apikey"
 	"smallbiznis-controlplane/services/domain"
 	"time"
 
 	"github.com/bwmarrin/snowflake"
 	"github.com/gosimple/slug"
-	"github.com/hibiken/asynq"
 	tenantv1 "github.com/smallbiznis/go-genproto/smallbiznis/controlplane/tenant/v1"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/fx"
@@ -27,22 +27,20 @@ import (
 
 type Service struct {
 	db     *gorm.DB
-	asynq  Enqueuer
+	asynq  task.Enqueuer
 	node   *snowflake.Node
+	seq    sequence.Generator
 	config *config.Config
 	repo   repository.Repository[Tenant]
 	tenantv1.UnimplementedTenantServiceServer
 }
 
-type Enqueuer interface {
-	Enqueue(task *asynq.Task, opts ...asynq.Option) (*asynq.TaskInfo, error)
-}
-
 type ServiceParams struct {
 	fx.In
 	DB     *gorm.DB
-	Asynq  Enqueuer
+	Asynq  task.Enqueuer
 	Node   *snowflake.Node
+	Seq    sequence.Generator
 	Config *config.Config
 }
 
@@ -51,6 +49,7 @@ func NewService(p ServiceParams) *Service {
 		db:     p.DB,
 		asynq:  p.Asynq,
 		node:   p.Node,
+		seq:    p.Seq,
 		config: p.Config,
 		repo:   repository.ProvideStore[Tenant](p.DB),
 	}
@@ -106,9 +105,9 @@ func (s *Service) CreateTenant(ctx context.Context, req *tenantv1.CreateTenantRe
 
 	zapLog := zap.L().With(traceOpt...)
 
-	if s.config.RootDomain == "" {
-		zapLog.Error("failed to create tenant, root domain not configured")
-		return nil, status.Error(codes.Internal, "failed to create tenant, root domain not configured")
+	if s.config.Platform.Domain == "" {
+		zapLog.Error("failed to create tenant, platform domain not configured")
+		return nil, status.Error(codes.Internal, "failed to create tenant, platform domain not configured")
 	}
 
 	slugName := req.GetSlug()
@@ -130,6 +129,11 @@ func (s *Service) CreateTenant(ctx context.Context, req *tenantv1.CreateTenantRe
 	}
 
 	tenantID := s.node.Generate().String()
+	tenantCode, err := s.seq.NextTenantCode(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed create tenant")
+	}
+
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
 
 		tenant := &Tenant{
@@ -137,6 +141,7 @@ func (s *Service) CreateTenant(ctx context.Context, req *tenantv1.CreateTenantRe
 			Type:        TenantType(req.GetType()),
 			Name:        req.GetName(),
 			Slug:        slugName,
+			Code:        tenantCode,
 			CountryCode: req.GetCountryCode(),
 			Timezone:    req.GetTimezone(),
 			Status:      Active,
@@ -192,27 +197,27 @@ func (s *Service) CreateTenant(ctx context.Context, req *tenantv1.CreateTenantRe
 			return fmt.Errorf("failed to create api key: %w", err)
 		}
 
-		payload := map[string]interface{}{
-			"tenant_id":   tenantID,
-			"tenant_slug": slugName,
-			"domain":      defaultHostName,
-		}
-		payloadBytes, _ := json.Marshal(payload)
+		// payload := map[string]interface{}{
+		// 	"tenant_id":   tenantID,
+		// 	"tenant_slug": slugName,
+		// 	"domain":      defaultHostName,
+		// }
+		// payloadBytes, _ := json.Marshal(payload)
 
-		tasks := []*asynq.Task{
-			asynq.NewTask("tenant:provisioning:ledger", payloadBytes),
-			asynq.NewTask("tenant:provisioning:inventory", payloadBytes),
-			asynq.NewTask("tenant:provisioning:rules", payloadBytes),
-			asynq.NewTask("tenant:provisioning:loyalty", payloadBytes),
-			asynq.NewTask("tenant:provisioning:voucher", payloadBytes),
-		}
+		// tasks := []*asynq.Task{
+		// 	asynq.NewTask("tenant:provisioning:ledger", payloadBytes),
+		// 	asynq.NewTask("tenant:provisioning:inventory", payloadBytes),
+		// 	asynq.NewTask("tenant:provisioning:rules", payloadBytes),
+		// 	asynq.NewTask("tenant:provisioning:loyalty", payloadBytes),
+		// 	asynq.NewTask("tenant:provisioning:voucher", payloadBytes),
+		// }
 
-		for _, task := range tasks {
-			if _, err := s.asynq.Enqueue(task, asynq.Queue("critical")); err != nil {
-				zapLog.Error("failed enqueue provisioning task", zap.String("task_type", task.Type()), zap.Error(err))
-				return fmt.Errorf("failed to enqueue provisioning task: %w", err)
-			}
-		}
+		// for _, task := range tasks {
+		// 	if _, err := s.asynq.Enqueue(task, asynq.Queue("critical")); err != nil {
+		// 		zapLog.Error("failed enqueue provisioning task", zap.String("task_type", task.Type()), zap.Error(err))
+		// 		return fmt.Errorf("failed to enqueue provisioning task: %w", err)
+		// 	}
+		// }
 
 		return nil
 	}); err != nil {

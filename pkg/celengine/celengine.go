@@ -4,9 +4,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sync"
 
 	"github.com/google/cel-go/cel"
 )
+
+var envCache = sync.Map{}
+
+func GetOrBuildEnv(attrs map[string]interface{}) (*cel.Env, error) {
+	key := reflect.TypeOf(attrs).String()
+	if v, ok := envCache.Load(key); ok {
+		return v.(*cel.Env), nil
+	}
+
+	env, err := BuildCelEnvFromAttributes(attrs)
+	if err == nil {
+		envCache.Store(key, env)
+	}
+
+	return env, err
+}
 
 func BuildCelEnvFromAttributes(attrs map[string]interface{}) (*cel.Env, error) {
 	var variables []cel.EnvOption
@@ -62,7 +79,7 @@ func BuildCelEnvFromAttributes(attrs map[string]interface{}) (*cel.Env, error) {
 	return env, nil
 }
 
-func StructToMap(s *interface{}) map[string]interface{} {
+func StructToMap(s interface{}) map[string]interface{} {
 	if s == nil {
 		return map[string]interface{}{}
 	}
@@ -112,4 +129,23 @@ func Evaluate(env *cel.Env, expr string, attrs map[string]interface{}) (bool, er
 	}
 
 	return b, nil
+}
+
+func EvaluateDynamic(env *cel.Env, expr string, attrs map[string]interface{}) (interface{}, error) {
+	ast, issues := env.Compile(expr)
+	if issues != nil && issues.Err() != nil {
+		return nil, issues.Err()
+	}
+
+	prg, err := env.Program(ast)
+	if err != nil {
+		return nil, err
+	}
+
+	out, _, err := prg.Eval(attrs)
+	if err != nil {
+		return nil, err
+	}
+
+	return out.Value(), nil
 }

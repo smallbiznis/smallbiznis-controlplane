@@ -24,9 +24,6 @@ type Rule struct {
 	UpdatedAt     time.Time              `gorm:"column:updated_at"`
 }
 
-// TableName defines the storage table name for Rule records.
-func (Rule) TableName() string { return "rules" }
-
 // RuleAction describes a rule action payload stored as JSON.
 type RuleAction struct {
 	Type           rulev1.RuleActionType `json:"type"`
@@ -39,7 +36,7 @@ type RuleAction struct {
 
 // PointAction mirrors rulev1.PointAction for JSON storage.
 type PointAction struct {
-	Points    int32             `json:"points"`
+	Points    int64             `json:"points"`
 	Reference string            `json:"reference,omitempty"`
 	Metadata  map[string]string `json:"metadata,omitempty"`
 }
@@ -115,7 +112,7 @@ func (r *Rule) ToProto() (*rulev1.Rule, error) {
 
 	out := &rulev1.Rule{
 		RuleId:        r.RuleID,
-		OrgId:         r.TenantID,
+		TenantId:      r.TenantID,
 		Name:          r.Name,
 		Description:   r.Description,
 		IsActive:      r.IsActive,
@@ -130,6 +127,11 @@ func (r *Rule) ToProto() (*rulev1.Rule, error) {
 	}
 	if !r.UpdatedAt.IsZero() {
 		out.UpdatedAt = timestamppb.New(r.UpdatedAt)
+	}
+	if r.IsActive {
+		out.Status = rulev1.RuleStatus_RULE_STATUS_ACTIVE
+	} else {
+		out.Status = rulev1.RuleStatus_RULE_STATUS_INACTIVE
 	}
 
 	return out, nil
@@ -204,16 +206,15 @@ func ProtoActionsFromModel(actions []RuleAction) ([]*rulev1.RuleAction, error) {
 	for _, action := range actions {
 		proto := &rulev1.RuleAction{Type: action.Type}
 		switch action.Type {
-		case rulev1.RuleActionType_RULE_ACTION_TYPE_EARN_POINT,
-			rulev1.RuleActionType_RULE_ACTION_TYPE_REDEEM_POINT:
+		case rulev1.RuleActionType_RULE_ACTION_TYPE_REWARD_POINT:
 			if action.PointAction != nil {
-				proto.Payload = &rulev1.RuleAction_PointAction{PointAction: &rulev1.PointAction{
+				proto.PointAction = &rulev1.PointAction{
 					Points:    action.PointAction.Points,
 					Reference: action.PointAction.Reference,
 					Metadata:  cloneMap(action.PointAction.Metadata),
-				}}
+				}
 			}
-		case rulev1.RuleActionType_RULE_ACTION_TYPE_ISSUE_VOUCHER:
+		case rulev1.RuleActionType_RULE_ACTION_TYPE_VOUCHER:
 			if action.VoucherAction != nil {
 				voucher := &rulev1.VoucherAction{
 					VoucherCode:   action.VoucherAction.VoucherCode,
@@ -224,40 +225,39 @@ func ProtoActionsFromModel(actions []RuleAction) ([]*rulev1.RuleAction, error) {
 				if action.VoucherAction.ExpiryDate != nil {
 					voucher.ExpiryDate = timestamppb.New(*action.VoucherAction.ExpiryDate)
 				}
-				proto.Payload = &rulev1.RuleAction_VoucherAction{VoucherAction: voucher}
+				proto.VoucherAction = voucher
 			}
 		case rulev1.RuleActionType_RULE_ACTION_TYPE_CASHBACK:
 			if action.CashbackAction != nil {
-				proto.Payload = &rulev1.RuleAction_CashbackAction{CashbackAction: &rulev1.CashbackAction{
+				proto.CashbackAction = &rulev1.CashbackAction{
 					Amount:         action.CashbackAction.Amount,
 					Currency:       action.CashbackAction.Currency,
 					TargetWalletId: action.CashbackAction.TargetWalletID,
 					Metadata:       cloneMap(action.CashbackAction.Metadata),
-				}}
+				}
 			}
 		case rulev1.RuleActionType_RULE_ACTION_TYPE_NOTIFY:
 			if action.NotifyAction != nil {
-				proto.Payload = &rulev1.RuleAction_NotifyAction{NotifyAction: &rulev1.NotifyAction{
+				proto.NotifyAction = &rulev1.NotifyAction{
 					Channel:    action.NotifyAction.Channel,
 					TemplateId: action.NotifyAction.TemplateID,
 					Metadata:   cloneMap(action.NotifyAction.Metadata),
-				}}
+				}
 			}
-		case rulev1.RuleActionType_RULE_ACTION_TYPE_TAG_CUSTOMER:
+		case rulev1.RuleActionType_RULE_ACTION_TYPE_TAG:
 			if action.TagAction != nil {
-				proto.Payload = &rulev1.RuleAction_TagAction{TagAction: &rulev1.TagAction{
+				proto.TagAction = &rulev1.TagAction{
 					TagKey:   action.TagAction.TagKey,
 					TagValue: action.TagAction.TagValue,
-				}}
+				}
 			}
 		default:
-			// leave payload nil for unsupported types to preserve round trip
 			if action.PointAction != nil {
-				proto.Payload = &rulev1.RuleAction_PointAction{PointAction: &rulev1.PointAction{
+				proto.PointAction = &rulev1.PointAction{
 					Points:    action.PointAction.Points,
 					Reference: action.PointAction.Reference,
 					Metadata:  cloneMap(action.PointAction.Metadata),
-				}}
+				}
 			}
 		}
 		out = append(out, proto)

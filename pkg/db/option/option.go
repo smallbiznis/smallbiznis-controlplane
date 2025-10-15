@@ -22,12 +22,6 @@ func (f applyQuery) Apply(db *gorm.DB) *gorm.DB {
 	return f(db)
 }
 
-type Condition struct {
-	Field    string
-	Operator Operator
-	Value    any
-}
-
 // Operator representation the ope
 type Operator string
 
@@ -74,6 +68,13 @@ func (o Operator) Valid() bool {
 	}
 }
 
+type Condition struct {
+	Field      string
+	Operator   Operator
+	Value      any
+	Conditions []Condition
+}
+
 func ApplyOperator(cond Condition) QueryOption {
 	return applyQuery(func(db *gorm.DB) *gorm.DB {
 		switch cond.Operator {
@@ -81,7 +82,6 @@ func ApplyOperator(cond Condition) QueryOption {
 			return db.Where(fmt.Sprintf("%s %s ?", cond.Field, cond.Operator), cond.Value)
 
 		case IN:
-			// pastikan value slice
 			return db.Where(fmt.Sprintf("%s IN ?", cond.Field), cond.Value)
 
 		case BETWEEN:
@@ -113,6 +113,23 @@ func ApplyOperator(cond Condition) QueryOption {
 				return db
 			}
 			return db.Where("NOT EXISTS (?)", subQuery)
+
+		case OR:
+			nextcond, ok := cond.Value.([]Condition)
+			if !ok {
+				zap.L().Warn("OR expects []Condition")
+				return db
+			}
+
+			firstcond := nextcond[0]
+			db = db.Where("%s %s %s", firstcond.Field, firstcond.Field, firstcond.Value)
+			if len(nextcond) > 1 {
+				for _, c := range nextcond[1:] {
+					db = db.Or("%s %s %s", c.Field, c.Operator, c.Value)
+				}
+			}
+
+			return db
 
 		default:
 			zap.L().Warn("Unsupported operator", zap.String("operator", string(cond.Operator)))

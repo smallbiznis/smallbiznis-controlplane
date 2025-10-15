@@ -9,6 +9,12 @@ import (
 	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
+// Codex directive:
+// Provide DSL evaluator using github.com/google/cel-go/cel.
+// Implement Evaluate(expression string, ctx map[string]interface{}) (bool, error)
+// Return true if expression evaluates to true.
+// Used by RuleService for condition evaluation.
+
 // Evaluator compiles and evaluates CEL expressions for rule matching.
 type Evaluator struct{}
 

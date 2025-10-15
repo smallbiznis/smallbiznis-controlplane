@@ -15,7 +15,10 @@ import (
 	"smallbiznis-controlplane/pkg/db"
 	"smallbiznis-controlplane/pkg/httpapi"
 	"smallbiznis-controlplane/pkg/logger"
+	"smallbiznis-controlplane/pkg/redis"
+	"smallbiznis-controlplane/pkg/sequence"
 	"smallbiznis-controlplane/pkg/server"
+	"smallbiznis-controlplane/pkg/task"
 	"smallbiznis-controlplane/services/ledger"
 )
 
@@ -24,6 +27,9 @@ func main() {
 		config.Module,
 		logger.Module,
 		db.Module,
+		redis.Module,
+		task.Client,
+		sequence.Module,
 		fx.Provide(
 			server.RegisterServerMux,
 			provideTracerProvider,

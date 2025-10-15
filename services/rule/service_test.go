@@ -36,8 +36,8 @@ func newTestService(t *testing.T) (*Service, *gorm.DB) {
 	return svc, db
 }
 
-func withOrgContext(ctx context.Context, orgID string) context.Context {
-	md := metadata.New(map[string]string{metadataOrgIDKey: orgID})
+func withOrgContext(ctx context.Context, tenantID string) context.Context {
+	md := metadata.New(map[string]string{metadataTenantIDKey: tenantID})
 	return metadata.NewIncomingContext(ctx, md)
 }
 
@@ -51,14 +51,14 @@ func TestService_CreateAndGetRule(t *testing.T) {
 		Description:   "reward high spending orders",
 		IsActive:      true,
 		Priority:      10,
-		Trigger:       rulev1.RuleTriggerType_RULE_TRIGGER_TYPE_ORDER_CREATED,
+		Trigger:       rulev1.RuleTriggerType_RULE_TRIGGER_TYPE_PURCHASE,
 		DslExpression: "total_spent > 100",
 		Actions: []*rulev1.RuleAction{
 			{
-				Type: rulev1.RuleActionType_RULE_ACTION_TYPE_EARN_POINT,
-				Payload: &rulev1.RuleAction_PointAction{PointAction: &rulev1.PointAction{
+				Type: rulev1.RuleActionType_RULE_ACTION_TYPE_REWARD_POINT,
+				PointAction: &rulev1.PointAction{
 					Points: 50,
-				}},
+				},
 			},
 		},
 	})

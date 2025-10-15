@@ -23,8 +23,7 @@ require (
 	github.com/miekg/dns v1.1.68
 	github.com/minio/minio-go/v7 v7.0.95
 	github.com/redis/go-redis/v9 v9.14.0
-	github.com/smallbiznis/go-genproto v0.0.0-20251012160816-c596bacec4d9
-	github.com/smallbiznis/smallbiznisapis v0.0.0
+	github.com/smallbiznis/go-genproto v0.0.0-20251015214756-383f8706f31f
 	github.com/spf13/viper v1.21.0
 	github.com/spf13/viper/remote v1.20.1
 	github.com/stretchr/testify v1.11.1
@@ -54,8 +53,6 @@ require (
 	gorm.io/plugin/prometheus v0.1.0
 	k8s.io/apimachinery v0.34.1
 )
-
-replace github.com/smallbiznis/smallbiznisapis => ./third_party/smallbiznisapis
 
 require (
 	cel.dev/expr v0.24.0 // indirect

@@ -5,7 +5,7 @@ import (
 	"go.uber.org/fx"
 )
 
-var Module = fx.Module("secretmanager", fx.Provide(ProvideVault))
+var Module = fx.Module("vault", fx.Provide(ProvideVault))
 
 func ProvideVault() (*vault.Client, error) {
 	client, err := vault.New(

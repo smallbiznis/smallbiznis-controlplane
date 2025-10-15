@@ -4,54 +4,84 @@ services:
   controlplane:
     build:
       context: .
-      dockerfile: ./cmd/controlplane/Dockerfile
+      dockerfile: Dockerfile
+      args:
+        SERVICE_PATH: cmd/controlplane
+        OUTPUT_NAME: controlplane
     container_name: controlplane
     restart: unless-stopped
+    env_file:
+      - .env
     volumes:
       - ./cmd/controlplane/config.yaml:/app/config.yaml
 
   ledger:
     build:
       context: .
-      dockerfile: ./cmd/ledger/Dockerfile
+      dockerfile: Dockerfile
+      args:
+        SERVICE_PATH: cmd/ledger
+        OUTPUT_NAME: ledger
     container_name: ledger
     restart: unless-stopped
+    env_file:
+      - .env
     volumes:
       - ./cmd/ledger/config.yaml:/app/config.yaml
 
   rule:
     build:
       context: .
-      dockerfile: ./cmd/rule/Dockerfile
+      dockerfile: Dockerfile
+      args:
+        SERVICE_PATH: cmd/rule
+        OUTPUT_NAME: rule
     container_name: rule
     restart: unless-stopped
+    env_file:
+      - .env
     volumes:
       - ./cmd/rule/config.yaml:/app/config.yaml
 
   loyalty:
     build:
       context: .
-      dockerfile: ./cmd/loyalty/Dockerfile
+      dockerfile: Dockerfile
+      args:
+        SERVICE_PATH: cmd/loyalty
+        OUTPUT_NAME: loyalty
     container_name: loyalty
     restart: unless-stopped
+    env_file:
+      - .env
     volumes:
       - ./cmd/loyalty/config.yaml:/app/config.yaml
 
-  inventory:
-    build:
-      context: .
-      dockerfile: ./cmd/inventory/Dockerfile
-    container_name: inventory
-    restart: unless-stopped
-    volumes:
-      - ./cmd/inventory/config.yaml:/app/config.yaml
+  # inventory:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #     args:
+  #       SERVICE_PATH: cmd/inventory
+  #       OUTPUT_NAME: inventory
+  #   container_name: inventory
+  #   restart: unless-stopped
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     - ./cmd/inventory/config.yaml:/app/config.yaml
 
   voucher:
     build:
       context: .
-      dockerfile: ./cmd/voucher/Dockerfile
+      dockerfile: Dockerfile
+      args:
+        SERVICE_PATH: cmd/voucher
+        OUTPUT_NAME: voucher
     container_name: voucher
     restart: unless-stopped
+    env_file:
+      - .env
     volumes:
       - ./cmd/voucher/config.yaml:/app/config.yaml
 

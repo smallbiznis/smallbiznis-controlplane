@@ -10,13 +10,14 @@ import (
 type TenantType string
 
 var (
+	Platform TenantType = "platform"
 	Personal TenantType = "personal"
 	Company  TenantType = "company"
 )
 
 func (t TenantType) String() string {
 	switch t {
-	case Personal, Company:
+	case Platform, Personal, Company:
 		return string(t)
 	default:
 		return ""
@@ -48,9 +49,11 @@ type Tenant struct {
 	UpdatedAt   time.Time    `gorm:"column:updated_at"`
 	Type        TenantType   `gorm:"column:type"`
 	Name        string       `gorm:"column:name"`
+	Code        string       `gorm:"column:code"`
 	Slug        string       `gorm:"column:slug"`
 	CountryCode string       `gorm:"column:country_code"`
 	Timezone    string       `gorm:"column:timezone"`
+	IsDefault   bool         `gorm:"column:is_default;"`
 	Status      TenantStatus `gorm:"column:status"`
 }
 

@@ -1,4 +1,4 @@
-package loyalty
+package transaction
 
 import (
 	"context"
@@ -7,23 +7,23 @@ import (
 	"smallbiznis-controlplane/pkg/config"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	loyaltyv1 "github.com/smallbiznis/go-genproto/smallbiznis/loyalty/v1"
+	transactionv1 "github.com/smallbiznis/go-genproto/smallbiznis/transaction/v1"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 )
 
-var Module = fx.Module("loyalty.service",
+var Module = fx.Module("transaction.service",
 	fx.Provide(NewService),
 	fx.Invoke(registerServiceServer),
 )
 
-var Gateway = fx.Module("loyalty.gateway",
+var Gateway = fx.Module("transaction.gateway",
 	fx.Invoke(registerServiceHandlerServer),
 )
 
 func registerServiceServer(server *grpc.Server, service *Service) {
-	loyaltyv1.RegisterPointServiceServer(server, service)
+	transactionv1.RegisterTransactionServiceServer(server, service)
 }
 
 type registerServiceHandlerParams struct {
@@ -41,7 +41,7 @@ func registerServiceHandlerServer(p registerServiceHandlerParams) {
 			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
 
-			if err := loyaltyv1.RegisterPointServiceHandlerServer(ctx, p.Mux, p.Service); err != nil {
+			if err := transactionv1.RegisterTransactionServiceHandlerServer(ctx, p.Mux, p.Service); err != nil {
 				zap.L().Error("failed to register tenant http handler", zap.Error(err))
 				return err
 			}

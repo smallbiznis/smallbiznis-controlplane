@@ -4,25 +4,26 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/bwmarrin/snowflake"
-	common "github.com/smallbiznis/go-genproto/smallbiznis/common"
 	rulev1 "github.com/smallbiznis/go-genproto/smallbiznis/rule/v1"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 	"gorm.io/gorm"
 )
 
 const (
-	metadataOrgIDKey = "x-org-id"
-	defaultPageSize  = 20
-	maxPageSize      = 100
+	metadataTenantIDKey = "x-tenant-id"
+	defaultPageSize     = 20
+	maxPageSize         = 100
 )
 
 // Service implements rulev1.RuleServiceServer.
@@ -66,14 +67,16 @@ func NewService(p ServiceParams) *Service {
 }
 
 // CreateRule handles the CreateRule RPC.
-func (s *Service) CreateRule(ctx context.Context, req *rulev1.CreateRuleRequest) (*rulev1.Rule, error) {
+func (s *Service) CreateRule(ctx context.Context, req *rulev1.CreateRuleRequest) (*rulev1.CreateRuleResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request must not be nil")
 	}
-	orgID, err := orgIDFromContext(ctx)
+
+	tenantID, err := s.resolveTenantID(ctx, req.GetTenantId())
 	if err != nil {
 		return nil, err
 	}
+
 	if strings.TrimSpace(req.GetName()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "name is required")
 	}
@@ -90,7 +93,7 @@ func (s *Service) CreateRule(ctx context.Context, req *rulev1.CreateRuleRequest)
 	now := time.Now().UTC()
 	rule := &Rule{
 		RuleID:        s.nextRuleID(),
-		TenantID:      orgID,
+		TenantID:      tenantID,
 		Name:          req.GetName(),
 		Description:   req.GetDescription(),
 		IsActive:      req.GetIsActive(),
@@ -117,23 +120,24 @@ func (s *Service) CreateRule(ctx context.Context, req *rulev1.CreateRuleRequest)
 		return nil, status.Error(codes.Internal, "failed to marshal rule")
 	}
 
-	return protoRule, nil
+	return &rulev1.CreateRuleResponse{Rule: protoRule}, nil
 }
 
 // GetRule handles the GetRule RPC.
-func (s *Service) GetRule(ctx context.Context, req *rulev1.GetRuleRequest) (*rulev1.Rule, error) {
+func (s *Service) GetRule(ctx context.Context, req *rulev1.GetRuleRequest) (*rulev1.GetRuleResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request must not be nil")
 	}
 	if strings.TrimSpace(req.GetRuleId()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "rule_id is required")
 	}
-	orgID, err := orgIDFromContext(ctx)
+
+	tenantID, err := s.resolveTenantID(ctx, "")
 	if err != nil {
 		return nil, err
 	}
 
-	rule, err := s.repo.GetByID(ctx, orgID, req.GetRuleId())
+	rule, err := s.repo.GetByID(ctx, tenantID, req.GetRuleId())
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, status.Error(codes.NotFound, "rule not found")
 	}
@@ -148,7 +152,7 @@ func (s *Service) GetRule(ctx context.Context, req *rulev1.GetRuleRequest) (*rul
 		return nil, status.Error(codes.Internal, "failed to marshal rule")
 	}
 
-	return protoRule, nil
+	return &rulev1.GetRuleResponse{Rule: protoRule}, nil
 }
 
 // ListRules handles the ListRules RPC.
@@ -156,22 +160,21 @@ func (s *Service) ListRules(ctx context.Context, req *rulev1.ListRulesRequest) (
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request must not be nil")
 	}
-	orgID, err := orgIDFromContext(ctx)
+
+	tenantID, err := s.resolveTenantID(ctx, req.GetTenantId())
 	if err != nil {
 		return nil, err
 	}
 
-	limit := defaultPageSize
-	cursor := ""
-	if req.GetPaging() != nil {
-		cursor = req.GetPaging().GetCursor()
-		if req.GetPaging().GetLimit() > 0 {
-			limit = int(req.GetPaging().GetLimit())
-		}
+	limit := int(req.GetLimit())
+	if limit <= 0 {
+		limit = defaultPageSize
 	}
 	if limit > maxPageSize {
 		limit = maxPageSize
 	}
+
+	cursor := strings.TrimSpace(req.GetCursor())
 
 	var afterPriority *int32
 	afterRuleID := ""
@@ -188,11 +191,11 @@ func (s *Service) ListRules(ctx context.Context, req *rulev1.ListRulesRequest) (
 		AfterPriority:   afterPriority,
 		AfterRuleID:     afterRuleID,
 		Limit:           limit + 1,
-		IncludeInactive: req.GetIncludeInactive(),
-		Triggers:        req.GetTriggers(),
+		IncludeInactive: false,
+		Triggers:        []rulev1.RuleTriggerType{},
 	}
 
-	rules, err := s.repo.List(ctx, orgID, params)
+	rules, err := s.repo.List(ctx, tenantID, params)
 	if err != nil {
 		s.logger.Error("failed to list rules", zap.Error(err))
 		return nil, status.Error(codes.Internal, "failed to list rules")
@@ -219,32 +222,27 @@ func (s *Service) ListRules(ctx context.Context, req *rulev1.ListRulesRequest) (
 		nextCursor = encodeCursor(last.Priority, last.RuleID)
 	}
 
-	paging := &common.CursorResponse{
-		NextCursor: nextCursor,
-		HasMore:    hasMore,
-		TotalCount: int32(len(protoRules)),
-	}
-
 	return &rulev1.ListRulesResponse{
-		Rules:  protoRules,
-		Paging: paging,
+		Rules:      protoRules,
+		NextCursor: nextCursor,
 	}, nil
 }
 
 // UpdateRule handles the UpdateRule RPC.
-func (s *Service) UpdateRule(ctx context.Context, req *rulev1.UpdateRuleRequest) (*rulev1.Rule, error) {
+func (s *Service) UpdateRule(ctx context.Context, req *rulev1.UpdateRuleRequest) (*rulev1.UpdateRuleResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request must not be nil")
 	}
 	if strings.TrimSpace(req.GetRuleId()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "rule_id is required")
 	}
-	orgID, err := orgIDFromContext(ctx)
+
+	tenantID, err := s.resolveTenantID(ctx, "")
 	if err != nil {
 		return nil, err
 	}
 
-	existing, err := s.repo.GetByID(ctx, orgID, req.GetRuleId())
+	existing, err := s.repo.GetByID(ctx, tenantID, req.GetRuleId())
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, status.Error(codes.NotFound, "rule not found")
 	}
@@ -262,6 +260,9 @@ func (s *Service) UpdateRule(ctx context.Context, req *rulev1.UpdateRuleRequest)
 	existing.Name = req.GetName()
 	existing.Description = req.GetDescription()
 	existing.IsActive = req.GetIsActive()
+	if statusValue := req.GetStatus(); statusValue != rulev1.RuleStatus_RULE_STATUS_UNSPECIFIED {
+		existing.IsActive = statusValue == rulev1.RuleStatus_RULE_STATUS_ACTIVE
+	}
 	existing.Priority = req.GetPriority()
 	existing.Trigger = req.GetTrigger()
 	existing.DSLExpression = req.GetDslExpression()
@@ -284,7 +285,7 @@ func (s *Service) UpdateRule(ctx context.Context, req *rulev1.UpdateRuleRequest)
 		return nil, status.Error(codes.Internal, "failed to marshal rule")
 	}
 
-	return protoRule, nil
+	return &rulev1.UpdateRuleResponse{Rule: protoRule}, nil
 }
 
 // DeleteRule handles the DeleteRule RPC.
@@ -295,94 +296,397 @@ func (s *Service) DeleteRule(ctx context.Context, req *rulev1.DeleteRuleRequest)
 	if strings.TrimSpace(req.GetRuleId()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "rule_id is required")
 	}
-	orgID, err := orgIDFromContext(ctx)
+
+	tenantID, err := s.resolveTenantID(ctx, "")
 	if err != nil {
 		return nil, err
 	}
 
-	if err := s.repo.Delete(ctx, orgID, req.GetRuleId()); errors.Is(err, gorm.ErrRecordNotFound) {
+	if err := s.repo.Delete(ctx, tenantID, req.GetRuleId()); errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, status.Error(codes.NotFound, "rule not found")
 	} else if err != nil {
 		s.logger.Error("failed to delete rule", zap.String("rule_id", req.GetRuleId()), zap.Error(err))
 		return nil, status.Error(codes.Internal, "failed to delete rule")
 	}
 
-	return &rulev1.DeleteRuleResponse{}, nil
+	return &rulev1.DeleteRuleResponse{Success: true}, nil
 }
 
-// EvaluateRules handles the EvaluateRules RPC.
-func (s *Service) EvaluateRules(ctx context.Context, req *rulev1.EvaluateRuleRequest) (*rulev1.EvaluateRuleResponse, error) {
+// EvaluateRule handles the EvaluateRule RPC.
+func (s *Service) EvaluateRule(ctx context.Context, req *rulev1.EvaluateRuleRequest) (*rulev1.EvaluateRuleResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request must not be nil")
 	}
-	orgID, err := orgIDFromContext(ctx)
+
+	if strings.TrimSpace(req.GetRuleId()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "rule_id is required")
+	}
+
+	tenantID, err := s.resolveTenantID(ctx, req.GetTenantId())
 	if err != nil {
 		return nil, err
 	}
-	trigger, err := parseTrigger(req.GetTrigger())
+
+	rule, err := s.repo.GetByID(ctx, tenantID, req.GetRuleId())
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, status.Error(codes.NotFound, "rule not found")
+	}
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		s.logger.Error("failed to load rule for evaluation", zap.String("rule_id", req.GetRuleId()), zap.Error(err))
+		return nil, status.Error(codes.Internal, "failed to evaluate rule")
 	}
 
-	rules, err := s.repo.ListActiveByTrigger(ctx, orgID, trigger)
-	if err != nil {
-		s.logger.Error("failed to load rules for evaluation", zap.Error(err))
-		return nil, status.Error(codes.Internal, "failed to evaluate rules")
-	}
+	ctxMap := structToMap(req.GetContext())
 
-	ctxMap := convertAttributes(req.GetAttributes())
-
-	matchedRules := make([]*rulev1.Rule, 0)
-	aggregatedActions := make([]*rulev1.RuleAction, 0)
-	metadata := make(map[string]string)
-	var totalPoints int32
-	var totalDiscount float64
-	var vouchers []string
-
-	for _, rule := range rules {
-		matched, evalErr := s.evaluator.Evaluate(rule.DSLExpression, ctxMap)
-		if evalErr != nil {
-			s.logger.Warn("rule evaluation failed", zap.String("rule_id", rule.RuleID), zap.Error(evalErr))
-			continue
-		}
-		if !matched {
-			continue
-		}
-
-		protoRule, err := rule.ToProto()
-		if err != nil {
-			s.logger.Error("failed to convert matched rule", zap.String("rule_id", rule.RuleID), zap.Error(err))
-			return nil, status.Error(codes.Internal, "failed to marshal matched rule")
-		}
-		matchedRules = append(matchedRules, protoRule)
-
-		actions, err := rule.ActionsList()
-		if err != nil {
-			s.logger.Error("failed to decode actions", zap.String("rule_id", rule.RuleID), zap.Error(err))
-			return nil, status.Error(codes.Internal, "failed to evaluate rule actions")
-		}
-		protoActions, err := ProtoActionsFromModel(actions)
-		if err != nil {
-			s.logger.Error("failed to convert actions", zap.String("rule_id", rule.RuleID), zap.Error(err))
-			return nil, status.Error(codes.Internal, "failed to evaluate rule actions")
-		}
-		aggregatedActions = append(aggregatedActions, protoActions...)
-
-		accumulateMetrics(actions, &totalPoints, &totalDiscount, &vouchers, metadata)
-	}
-
-	if len(metadata) == 0 {
-		metadata = nil
+	matched, actionValue, evalErr := s.executeRule(rule, ctxMap)
+	if evalErr != nil {
+		s.logger.Error("rule evaluation failed", zap.String("rule_id", rule.RuleID), zap.Error(evalErr))
+		return nil, status.Error(codes.Internal, "failed to evaluate rule")
 	}
 
 	return &rulev1.EvaluateRuleResponse{
-		MatchedRules:      matchedRules,
-		Actions:           aggregatedActions,
-		TotalPoints:       totalPoints,
-		TotalDiscount:     totalDiscount,
-		GeneratedVouchers: vouchers,
-		Metadata:          metadata,
+		Matched:     matched,
+		ActionValue: actionValue,
 	}, nil
+}
+
+// BatchEvaluate handles the BatchEvaluate RPC.
+func (s *Service) BatchEvaluate(ctx context.Context, req *rulev1.BatchEvaluateRequest) (*rulev1.BatchEvaluateResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request must not be nil")
+	}
+
+	tenantID, err := s.resolveTenantID(ctx, req.GetTenantId())
+	if err != nil {
+		return nil, err
+	}
+
+	ctxMap := structToMap(req.GetContext())
+
+	results, evalErr := s.evaluateRulesBatch(ctx, tenantID, req.GetRuleIds(), ctxMap)
+	if evalErr != nil {
+		s.logger.Error("batch evaluation failed", zap.Error(evalErr))
+		return nil, status.Error(codes.Internal, "failed to evaluate rules")
+	}
+
+	var totalMatched int32
+	for _, res := range results {
+		if res.GetStatus() == rulev1.EvaluationStatus_EVALUATION_STATUS_SUCCESS && res.GetMatched() {
+			totalMatched++
+		}
+	}
+
+	return &rulev1.BatchEvaluateResponse{
+		Results:      results,
+		TotalMatched: totalMatched,
+		TotalRules:   int32(len(results)),
+		ExecutionId:  s.newExecutionID(),
+		TenantId:     tenantID,
+	}, nil
+}
+
+// StreamEvaluate handles the bidirectional streaming evaluation RPC.
+func (s *Service) StreamEvaluate(stream rulev1.RuleService_StreamEvaluateServer) error {
+	for {
+		req, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		tenantID, tenantErr := s.resolveTenantID(stream.Context(), req.GetTenantId())
+		if tenantErr != nil {
+			return tenantErr
+		}
+
+		ctxMap := structToMap(req.GetContext())
+		results, evalErr := s.evaluateRulesBatch(stream.Context(), tenantID, req.GetRuleIds(), ctxMap)
+		if evalErr != nil {
+			s.logger.Error("stream evaluation batch failed", zap.Error(evalErr))
+			return status.Error(codes.Internal, "failed to evaluate rules")
+		}
+
+		for _, res := range results {
+			if sendErr := stream.Send(&rulev1.StreamEvaluateResponse{Result: res}); sendErr != nil {
+				return sendErr
+			}
+		}
+	}
+}
+
+func (s *Service) evaluateRulesBatch(ctx context.Context, tenantID string, ruleIDs []string, ctxMap map[string]any) ([]*rulev1.RuleEvaluationResult, error) {
+	results := make([]*rulev1.RuleEvaluationResult, 0)
+
+	if len(ruleIDs) > 0 {
+		for _, rawID := range ruleIDs {
+			ruleID := strings.TrimSpace(rawID)
+			if ruleID == "" {
+				continue
+			}
+
+			rule, err := s.repo.GetByID(ctx, tenantID, ruleID)
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				results = append(results, &rulev1.RuleEvaluationResult{
+					RuleId:       ruleID,
+					Status:       rulev1.EvaluationStatus_EVALUATION_STATUS_ERROR,
+					ErrorMessage: "rule not found",
+				})
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+
+			results = append(results, s.evaluateRuleResult(rule, ctxMap))
+		}
+		return results, nil
+	}
+
+	listParams := ListParams{
+		Limit:           0,
+		IncludeInactive: false,
+		Triggers:        []rulev1.RuleTriggerType{},
+	}
+
+	rules, err := s.repo.List(ctx, tenantID, listParams)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range rules {
+		results = append(results, s.evaluateRuleResult(&rules[i], ctxMap))
+	}
+
+	return results, nil
+}
+
+func (s *Service) evaluateRuleResult(rule *Rule, ctxMap map[string]any) *rulev1.RuleEvaluationResult {
+	result := &rulev1.RuleEvaluationResult{
+		RuleId: rule.RuleID,
+		Status: rulev1.EvaluationStatus_EVALUATION_STATUS_SUCCESS,
+	}
+
+	matched, actionValue, err := s.executeRule(rule, ctxMap)
+	if err != nil {
+		s.logger.Error("rule evaluation failed", zap.String("rule_id", rule.RuleID), zap.Error(err))
+		result.Status = rulev1.EvaluationStatus_EVALUATION_STATUS_ERROR
+		result.ErrorMessage = "failed to evaluate rule"
+		return result
+	}
+
+	result.Matched = matched
+	if matched {
+		result.ActionValue = actionValue
+	}
+
+	return result
+}
+
+func (s *Service) executeRule(rule *Rule, ctxMap map[string]any) (bool, *structpb.Struct, error) {
+	matched, err := s.evaluator.Evaluate(rule.DSLExpression, ctxMap)
+	if err != nil {
+		return false, nil, err
+	}
+	if !matched {
+		return false, nil, nil
+	}
+
+	actions, err := rule.ActionsList()
+	if err != nil {
+		return false, nil, err
+	}
+
+	summary, err := buildActionSummary(actions)
+	if err != nil {
+		return false, nil, err
+	}
+
+	return true, summary, nil
+}
+
+func buildActionSummary(actions []RuleAction) (*structpb.Struct, error) {
+	if len(actions) == 0 {
+		return nil, nil
+	}
+
+	var totalPoints int64
+	var totalCashback float64
+	var totalVoucherDiscount float64
+
+	vouchers := make([]any, 0)
+	notifications := make([]any, 0)
+	tags := make(map[string]string)
+	metadata := make(map[string]string)
+	actionEntries := make([]any, 0, len(actions))
+
+	for _, action := range actions {
+		entry := map[string]any{
+			"type": action.Type.String(),
+		}
+
+		switch action.Type {
+		case rulev1.RuleActionType_RULE_ACTION_TYPE_REWARD_POINT:
+			if payload := action.PointAction; payload != nil {
+				entry["points"] = payload.Points
+				if payload.Reference != "" {
+					entry["reference"] = payload.Reference
+				}
+				if len(payload.Metadata) > 0 {
+					entry["metadata"] = stringMapToAny(payload.Metadata)
+					metadata = mergeStringMaps(metadata, payload.Metadata)
+				}
+				totalPoints += payload.Points
+			}
+		case rulev1.RuleActionType_RULE_ACTION_TYPE_VOUCHER:
+			if payload := action.VoucherAction; payload != nil {
+				detail := map[string]any{
+					"voucher_code":   payload.VoucherCode,
+					"discount_value": payload.DiscountValue,
+					"discount_type":  payload.DiscountType,
+				}
+				if payload.ExpiryDate != nil {
+					detail["expiry_date"] = payload.ExpiryDate.UTC().Format(time.RFC3339)
+				}
+				if len(payload.Metadata) > 0 {
+					detail["metadata"] = stringMapToAny(payload.Metadata)
+					metadata = mergeStringMaps(metadata, payload.Metadata)
+				}
+				vouchers = append(vouchers, detail)
+				entry["voucher"] = detail
+				totalVoucherDiscount += payload.DiscountValue
+			}
+		case rulev1.RuleActionType_RULE_ACTION_TYPE_CASHBACK:
+			if payload := action.CashbackAction; payload != nil {
+				detail := map[string]any{
+					"amount": payload.Amount,
+				}
+				if payload.Currency != "" {
+					detail["currency"] = payload.Currency
+				}
+				if payload.TargetWalletID != "" {
+					detail["target_wallet_id"] = payload.TargetWalletID
+				}
+				if len(payload.Metadata) > 0 {
+					detail["metadata"] = stringMapToAny(payload.Metadata)
+					metadata = mergeStringMaps(metadata, payload.Metadata)
+				}
+				totalCashback += payload.Amount
+				entry["cashback"] = detail
+			}
+		case rulev1.RuleActionType_RULE_ACTION_TYPE_NOTIFY:
+			if payload := action.NotifyAction; payload != nil {
+				detail := map[string]any{}
+				if payload.Channel != "" {
+					detail["channel"] = payload.Channel
+				}
+				if payload.TemplateID != "" {
+					detail["template_id"] = payload.TemplateID
+				}
+				if len(payload.Metadata) > 0 {
+					detail["metadata"] = stringMapToAny(payload.Metadata)
+					metadata = mergeStringMaps(metadata, payload.Metadata)
+				}
+				entry["notification"] = detail
+				notifications = append(notifications, detail)
+			}
+		case rulev1.RuleActionType_RULE_ACTION_TYPE_TAG:
+			if payload := action.TagAction; payload != nil {
+				tag := map[string]any{
+					"tag_key":   payload.TagKey,
+					"tag_value": payload.TagValue,
+				}
+				entry["tag"] = tag
+				if payload.TagKey != "" {
+					tags[payload.TagKey] = payload.TagValue
+				}
+			}
+		default:
+			if payload := action.PointAction; payload != nil && len(payload.Metadata) > 0 {
+				metadata = mergeStringMaps(metadata, payload.Metadata)
+			}
+		}
+
+		actionEntries = append(actionEntries, entry)
+	}
+
+	summary := make(map[string]any)
+
+	if totalPoints != 0 {
+		summary["total_reward_points"] = totalPoints
+	}
+	if totalCashback != 0 {
+		summary["total_cashback_amount"] = totalCashback
+	}
+	if totalVoucherDiscount != 0 {
+		summary["total_voucher_discount"] = totalVoucherDiscount
+	}
+	if len(vouchers) > 0 {
+		summary["vouchers"] = vouchers
+	}
+	if len(notifications) > 0 {
+		summary["notifications"] = notifications
+	}
+	if len(tags) > 0 {
+		summary["tags"] = stringMapToAny(tags)
+	}
+	if len(metadata) > 0 {
+		summary["metadata"] = stringMapToAny(metadata)
+	}
+	if len(actionEntries) > 0 {
+		summary["actions"] = actionEntries
+	}
+	summary["actions_count"] = int64(len(actionEntries))
+
+	if len(actionEntries) == 0 && len(summary) == 1 {
+		return nil, nil
+	}
+
+	return structpb.NewStruct(summary)
+}
+
+func stringMapToAny(src map[string]string) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
+}
+
+func mergeStringMaps(dst map[string]string, src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return dst
+	}
+	if dst == nil {
+		dst = make(map[string]string, len(src))
+	}
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func structToMap(s *structpb.Struct) map[string]any {
+	if s == nil {
+		return nil
+	}
+	return s.AsMap()
+}
+
+func (s *Service) resolveTenantID(ctx context.Context, candidate string) (string, error) {
+	candidate = strings.TrimSpace(candidate)
+	if candidate != "" {
+		return candidate, nil
+	}
+	return orgIDFromContext(ctx)
+}
+
+func (s *Service) newExecutionID() string {
+	return fmt.Sprintf("exec-%s", s.nextRuleID())
 }
 
 func (s *Service) nextRuleID() string {
@@ -396,102 +700,19 @@ func (s *Service) nextRuleID() string {
 func orgIDFromContext(ctx context.Context) (string, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
-		return "", status.Error(codes.InvalidArgument, "missing organisation context")
+		return "", status.Error(codes.InvalidArgument, "tenant_id is required")
 	}
-	values := md.Get(metadataOrgIDKey)
-	if len(values) == 0 || strings.TrimSpace(values[0]) == "" {
-		return "", status.Error(codes.InvalidArgument, "missing organisation context")
-	}
-	return values[0], nil
-}
 
-func parseTrigger(raw string) (rulev1.RuleTriggerType, error) {
-	if strings.TrimSpace(raw) == "" {
-		return rulev1.RuleTriggerType_RULE_TRIGGER_TYPE_UNSPECIFIED, fmt.Errorf("trigger is required")
+	values := md.Get(metadataTenantIDKey)
+	if len(values) == 0 {
+		return "", status.Error(codes.InvalidArgument, "tenant_id is required")
 	}
-	normalized := strings.ToUpper(strings.TrimSpace(raw))
-	if !strings.HasPrefix(normalized, "RULE_TRIGGER_TYPE_") {
-		normalized = "RULE_TRIGGER_TYPE_" + normalized
-	}
-	if v, ok := rulev1.RuleTriggerType_value[normalized]; ok {
-		return rulev1.RuleTriggerType(v), nil
-	}
-	if idx, err := strconv.Atoi(raw); err == nil {
-		return rulev1.RuleTriggerType(idx), nil
-	}
-	return rulev1.RuleTriggerType_RULE_TRIGGER_TYPE_UNSPECIFIED, fmt.Errorf("unknown trigger %q", raw)
-}
 
-func convertAttributes(attrs map[string]string) map[string]any {
-	out := make(map[string]any, len(attrs))
-	for k, v := range attrs {
-		if iv, err := strconv.ParseInt(v, 10, 64); err == nil {
-			out[k] = iv
-			continue
-		}
-		if uv, err := strconv.ParseUint(v, 10, 64); err == nil {
-			out[k] = uv
-			continue
-		}
-		if fv, err := strconv.ParseFloat(v, 64); err == nil {
-			out[k] = fv
-			continue
-		}
-		if bv, err := strconv.ParseBool(v); err == nil {
-			out[k] = bv
-			continue
-		}
-		out[k] = v
+	if candidate := strings.TrimSpace(values[0]); candidate != "" {
+		return candidate, nil
 	}
-	return out
-}
 
-func accumulateMetrics(actions []RuleAction, points *int32, discount *float64, vouchers *[]string, metadata map[string]string) {
-	for _, action := range actions {
-		switch action.Type {
-		case rulev1.RuleActionType_RULE_ACTION_TYPE_EARN_POINT:
-			if action.PointAction != nil {
-				*points += action.PointAction.Points
-				mergeMetadata(metadata, action.PointAction.Metadata)
-			}
-		case rulev1.RuleActionType_RULE_ACTION_TYPE_REDEEM_POINT:
-			if action.PointAction != nil {
-				*points -= action.PointAction.Points
-				mergeMetadata(metadata, action.PointAction.Metadata)
-			}
-		case rulev1.RuleActionType_RULE_ACTION_TYPE_CASHBACK:
-			if action.CashbackAction != nil {
-				*discount += action.CashbackAction.Amount
-				mergeMetadata(metadata, action.CashbackAction.Metadata)
-			}
-		case rulev1.RuleActionType_RULE_ACTION_TYPE_ISSUE_VOUCHER:
-			if action.VoucherAction != nil {
-				*discount += action.VoucherAction.DiscountValue
-				if action.VoucherAction.VoucherCode != "" {
-					*vouchers = append(*vouchers, action.VoucherAction.VoucherCode)
-				}
-				mergeMetadata(metadata, action.VoucherAction.Metadata)
-			}
-		case rulev1.RuleActionType_RULE_ACTION_TYPE_NOTIFY:
-			if action.NotifyAction != nil {
-				mergeMetadata(metadata, action.NotifyAction.Metadata)
-			}
-		case rulev1.RuleActionType_RULE_ACTION_TYPE_TAG_CUSTOMER:
-			if action.TagAction != nil && action.TagAction.TagKey != "" {
-				metadata[action.TagAction.TagKey] = action.TagAction.TagValue
-			}
-		default:
-			if action.PointAction != nil {
-				mergeMetadata(metadata, action.PointAction.Metadata)
-			}
-		}
-	}
-}
-
-func mergeMetadata(dst map[string]string, src map[string]string) {
-	for k, v := range src {
-		dst[k] = v
-	}
+	return "", status.Error(codes.InvalidArgument, "tenant_id is required")
 }
 
 func encodeCursor(priority int32, ruleID string) string {

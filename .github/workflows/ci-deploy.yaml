@@ -90,7 +90,7 @@ jobs:
           CMD_DIR="cmd/${{ matrix.service }}"
           if [[ -d "$CMD_DIR" ]]; then
             echo "Building command in $CMD_DIR"
-            go build "./$CMD_DIR"
+            go build -trimpath "./$CMD_DIR"
           else
             echo "No command directory at $CMD_DIR; skipping build."
           fi
