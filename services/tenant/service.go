@@ -2,57 +2,87 @@ package tenant
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"smallbiznis-controlplane/pkg/config"
 	"smallbiznis-controlplane/pkg/db/option"
 	"smallbiznis-controlplane/pkg/db/pagination"
+	"smallbiznis-controlplane/pkg/rediskey"
 	"smallbiznis-controlplane/pkg/repository"
 	"smallbiznis-controlplane/pkg/security"
 	"smallbiznis-controlplane/pkg/sequence"
 	"smallbiznis-controlplane/pkg/task"
+	"smallbiznis-controlplane/pkg/taskname"
 	"smallbiznis-controlplane/services/apikey"
 	"smallbiznis-controlplane/services/domain"
 	"time"
 
 	"github.com/bwmarrin/snowflake"
 	"github.com/gosimple/slug"
+	"github.com/hibiken/asynq"
+	"github.com/redis/go-redis/v9"
 	tenantv1 "github.com/smallbiznis/go-genproto/smallbiznis/controlplane/tenant/v1"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
 )
 
 type Service struct {
+	tenantv1.UnimplementedTenantServiceServer
+	grpc_health_v1.UnimplementedHealthServer
+
+	config *config.Config
 	db     *gorm.DB
+	rdb    *redis.Client
 	asynq  task.Enqueuer
 	node   *snowflake.Node
 	seq    sequence.Generator
-	config *config.Config
-	repo   repository.Repository[Tenant]
-	tenantv1.UnimplementedTenantServiceServer
+
+	repo repository.Repository[Tenant]
 }
 
 type ServiceParams struct {
 	fx.In
+	Config *config.Config
 	DB     *gorm.DB
+	Redis  *redis.Client
 	Asynq  task.Enqueuer
 	Node   *snowflake.Node
 	Seq    sequence.Generator
-	Config *config.Config
 }
 
 func NewService(p ServiceParams) *Service {
 	return &Service{
 		db:     p.DB,
+		rdb:    p.Redis,
 		asynq:  p.Asynq,
 		node:   p.Node,
 		seq:    p.Seq,
 		config: p.Config,
 		repo:   repository.ProvideStore[Tenant](p.DB),
 	}
+}
+
+func (s *Service) Check(ctx context.Context, req *grpc_health_v1.HealthCheckRequest) (*grpc_health_v1.HealthCheckResponse, error) {
+	// You can optionally check database connectivity here:
+	sqlDB, err := s.db.DB()
+	if err != nil {
+		return nil, status.Error(codes.Internal, "db not ready")
+	}
+	if err := sqlDB.PingContext(ctx); err != nil {
+		return &grpc_health_v1.HealthCheckResponse{Status: grpc_health_v1.HealthCheckResponse_NOT_SERVING}, nil
+	}
+
+	return &grpc_health_v1.HealthCheckResponse{Status: grpc_health_v1.HealthCheckResponse_SERVING}, nil
+}
+
+func (s *Service) Watch(req *grpc_health_v1.HealthCheckRequest, srv grpc_health_v1.Health_WatchServer) error {
+	// Optional: implement streaming health status (rarely used)
+	return status.Error(codes.Unimplemented, "Watch method not implemented")
 }
 
 func (s *Service) ListTenants(ctx context.Context, req *tenantv1.ListTenantsRequest) (*tenantv1.ListTenantsResponse, error) {
@@ -148,6 +178,7 @@ func (s *Service) CreateTenant(ctx context.Context, req *tenantv1.CreateTenantRe
 		}
 
 		if err := tx.Create(tenant).Error; err != nil {
+			zapLog.Error("failed to create tenant", zap.Error(err))
 			return fmt.Errorf("failed to create tenant: %w", err)
 		}
 
@@ -168,6 +199,7 @@ func (s *Service) CreateTenant(ctx context.Context, req *tenantv1.CreateTenantRe
 		}
 
 		if err := tx.Create(domain).Error; err != nil {
+			zapLog.Error("failed to create domain", zap.Error(err))
 			return fmt.Errorf("failed to create domain: %w", err)
 		}
 
@@ -194,30 +226,35 @@ func (s *Service) CreateTenant(ctx context.Context, req *tenantv1.CreateTenantRe
 		}
 
 		if err := tx.Create(apiKey).Error; err != nil {
+			zapLog.Error("failed to create api key", zap.Error(err))
 			return fmt.Errorf("failed to create api key: %w", err)
 		}
 
-		// payload := map[string]interface{}{
-		// 	"tenant_id":   tenantID,
-		// 	"tenant_slug": slugName,
-		// 	"domain":      defaultHostName,
-		// }
-		// payloadBytes, _ := json.Marshal(payload)
+		// Cache tenant to redis
+		if err := s.cacheTenant(ctx, tenant, domain); err != nil {
+			zapLog.Error("failed to cache tenant", zap.Error(err))
+			return err
+		}
 
-		// tasks := []*asynq.Task{
-		// 	asynq.NewTask("tenant:provisioning:ledger", payloadBytes),
-		// 	asynq.NewTask("tenant:provisioning:inventory", payloadBytes),
-		// 	asynq.NewTask("tenant:provisioning:rules", payloadBytes),
-		// 	asynq.NewTask("tenant:provisioning:loyalty", payloadBytes),
-		// 	asynq.NewTask("tenant:provisioning:voucher", payloadBytes),
-		// }
+		// Create Job Provisioning
+		payload := map[string]interface{}{
+			"tenant_id":   tenantID,
+			"tenant_slug": slugName,
+			"tenant_code": tenantCode,
+			"domain":      defaultHostName,
+		}
+		payloadBytes, _ := json.Marshal(payload)
 
-		// for _, task := range tasks {
-		// 	if _, err := s.asynq.Enqueue(task, asynq.Queue("critical")); err != nil {
-		// 		zapLog.Error("failed enqueue provisioning task", zap.String("task_type", task.Type()), zap.Error(err))
-		// 		return fmt.Errorf("failed to enqueue provisioning task: %w", err)
-		// 	}
-		// }
+		tasks := []*asynq.Task{
+			asynq.NewTask(taskname.TenantProvisioningLoyalty, payloadBytes),
+		}
+
+		for _, task := range tasks {
+			if _, err := s.asynq.Enqueue(task, asynq.Queue("critical")); err != nil {
+				zapLog.Error("failed enqueue provisioning task", zap.String("task_type", task.Type()), zap.Error(err))
+				return fmt.Errorf("failed to enqueue provisioning task: %w", err)
+			}
+		}
 
 		return nil
 	}); err != nil {
@@ -258,4 +295,15 @@ func (s *Service) GetTenant(ctx context.Context, req *tenantv1.GetTenantRequest)
 	}
 
 	return tenant.ToProto(), nil
+}
+
+func (s *Service) cacheTenant(ctx context.Context, t *Tenant, d *domain.Domain) error {
+	data, _ := json.Marshal(t)
+
+	pipe := s.rdb.Pipeline()
+	pipe.Set(ctx, rediskey.BuildTenantIDKey(t.ID), data, 0)
+	pipe.Set(ctx, rediskey.BuildTenantCodeKey(t.Code), t.ID, 0)
+	pipe.Set(ctx, rediskey.BuildTenantDomainKey(d.Hostname), t.ID, 0)
+	_, err := pipe.Exec(ctx)
+	return err
 }

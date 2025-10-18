@@ -1,0 +1,40 @@
+
+# Go build artifacts
+/bin/
+/build/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# Go modules cache
+# *.mod
+# *.sum
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+.cache
+
+# MacOS
+.DS_Store
+
+# Logs
+*.log
+
+# Env files
+.env
+.env.*
+
+# buf
+**/buf.lock
+gen/
+
+# certs
+certs
+
+*.yaml

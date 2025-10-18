@@ -57,6 +57,20 @@ services:
     volumes:
       - ./cmd/loyalty/config.yaml:/app/config.yaml
 
+  transaction:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_PATH: cmd/transaction
+        OUTPUT_NAME: transaction
+    container_name: transaction
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./cmd/transaction/config.yaml:/app/config.yaml
+
   # inventory:
   #   build:
   #     context: .
@@ -84,6 +98,20 @@ services:
       - .env
     volumes:
       - ./cmd/voucher/config.yaml:/app/config.yaml
+
+  task:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_PATH: cmd/task
+        OUTPUT_NAME: task
+    container_name: task
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./cmd/task/config.yaml:/app/config.yaml
 
 networks:
   default:

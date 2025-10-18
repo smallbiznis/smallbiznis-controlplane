@@ -14,7 +14,6 @@ import (
 var Module = fx.Module("rule.service",
 	fx.Provide(
 		NewRepository,
-		NewEvaluator,
 		NewService,
 	),
 	fx.Invoke(RegisterGRPCServer),

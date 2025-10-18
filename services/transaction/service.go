@@ -3,7 +3,6 @@ package transaction
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"time"
 
 	"github.com/bwmarrin/snowflake"
@@ -16,12 +15,14 @@ import (
 	"gorm.io/gorm"
 
 	"smallbiznis-controlplane/pkg/repository"
+	"smallbiznis-controlplane/pkg/sequence"
 )
 
 type Service struct {
 	transactionv1.UnimplementedTransactionServiceServer
 
 	db           *gorm.DB
+	seq          sequence.Generator
 	node         *snowflake.Node
 	transactions repository.Repository[Transaction]
 }
@@ -29,12 +30,14 @@ type Service struct {
 type Params struct {
 	fx.In
 	DB   *gorm.DB
+	Seq  sequence.Generator
 	Node *snowflake.Node
 }
 
 func NewService(p Params) *Service {
 	return &Service{
 		db:           p.DB,
+		seq:          p.Seq,
 		node:         p.Node,
 		transactions: repository.ProvideStore[Transaction](p.DB),
 	}
@@ -46,20 +49,22 @@ func NewService(p Params) *Service {
 
 // CreateTransaction implements the proto RPC
 func (s *Service) CreateTransaction(ctx context.Context, req *transactionv1.CreateTransactionRequest) (*transactionv1.CreateTransactionResponse, error) {
+	primaryKey := s.node.Generate().String()
+	transactionID, _ := s.seq.NextTransactionCode(ctx, "T002")
 	tx := &Transaction{
-		TransactionID:   s.node.Generate(),
-		TransactionCode: fmt.Sprintf("TXN-%s-%d", time.Now().Format("20060102"), rand.Intn(99999)),
-		TenantID:        parseID(req.TenantId),
-		UserID:          parseID(req.UserId),
-		OrderID:         req.OrderId,
-		Amount:          float64(req.Amount.Amount),
-		CurrencyCode:    req.Amount.CurrencyCode,
-		Status:          "pending",
-		PaymentMethod:   req.PaymentMethod.String(),
-		Channel:         "api",
-		Metadata:        structToJSON(req.Metadata),
-		CreatedAt:       time.Now(),
-		UpdatedAt:       time.Now(),
+		ID:            primaryKey,
+		TransactionID: transactionID,
+		TenantID:      req.GetTenantId(),
+		UserID:        req.GetUserId(),
+		OrderID:       req.GetOrderId(),
+		Amount:        float64(req.Amount.Amount),
+		CurrencyCode:  req.Amount.CurrencyCode,
+		Status:        PENDING,
+		PaymentMethod: PaymentMethod(req.PaymentMethod.String()),
+		Channel:       API,
+		Metadata:      structToJSON(req.Metadata),
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
 	}
 
 	if err := s.transactions.Create(ctx, tx); err != nil {
@@ -154,9 +159,10 @@ func toProto(tx *Transaction) *transactionv1.Transaction {
 	md := &structpb.Struct{}
 	_ = md.UnmarshalJSON([]byte(tx.Metadata))
 	return &transactionv1.Transaction{
-		TransactionId: fmt.Sprintf("%d", tx.TransactionID),
-		TenantId:      fmt.Sprintf("%d", tx.TenantID),
-		UserId:        fmt.Sprintf("%d", tx.UserID),
+		Id:            tx.ID,
+		TransactionId: tx.TransactionID,
+		TenantId:      tx.TenantID,
+		UserId:        tx.UserID,
 		OrderId:       tx.OrderID,
 		Amount: &common.Money{
 			CurrencyCode: tx.CurrencyCode,
@@ -171,46 +177,46 @@ func toProto(tx *Transaction) *transactionv1.Transaction {
 	}
 }
 
-func mapStatus(status string) transactionv1.TransactionStatus {
+func mapStatus(status Status) transactionv1.TransactionStatus {
 	switch status {
-	case "success":
-		return transactionv1.TransactionStatus_TRANSACTION_STATUS_SUCCESS
-	case "failed":
-		return transactionv1.TransactionStatus_TRANSACTION_STATUS_FAILED
-	case "cancelled":
-		return transactionv1.TransactionStatus_TRANSACTION_STATUS_CANCELLED
-	case "refunded":
-		return transactionv1.TransactionStatus_TRANSACTION_STATUS_REFUNDED
+	case SUCCESS:
+		return transactionv1.TransactionStatus_SUCCESS
+	case FAILED:
+		return transactionv1.TransactionStatus_FAILED
+	case CANCELLED:
+		return transactionv1.TransactionStatus_CANCELLED
+	case REFUNDED:
+		return transactionv1.TransactionStatus_REFUNDED
 	default:
-		return transactionv1.TransactionStatus_TRANSACTION_STATUS_PENDING
+		return transactionv1.TransactionStatus_PENDING
 	}
 }
 
-func mapPayment(method string) transactionv1.PaymentMethod {
+func mapPayment(method PaymentMethod) transactionv1.PaymentMethod {
 	switch method {
-	case "cash":
-		return transactionv1.PaymentMethod_PAYMENT_METHOD_CASH
-	case "card":
-		return transactionv1.PaymentMethod_PAYMENT_METHOD_CARD
-	case "qris":
-		return transactionv1.PaymentMethod_PAYMENT_METHOD_QRIS
-	case "transfer":
-		return transactionv1.PaymentMethod_PAYMENT_METHOD_TRANSFER
-	case "wallet":
-		return transactionv1.PaymentMethod_PAYMENT_METHOD_WALLET
+	case CASH:
+		return transactionv1.PaymentMethod_CASH
+	case CARD:
+		return transactionv1.PaymentMethod_CARD
+	case QRIS:
+		return transactionv1.PaymentMethod_QRIS
+	case TRANSFER:
+		return transactionv1.PaymentMethod_TRANSFER
+	case WALLET:
+		return transactionv1.PaymentMethod_WALLET
 	default:
 		return transactionv1.PaymentMethod_PAYMENT_METHOD_UNSPECIFIED
 	}
 }
 
-func mapChannel(ch string) transactionv1.ChannelType {
+func mapChannel(ch Channel) transactionv1.ChannelType {
 	switch ch {
-	case "online":
-		return transactionv1.ChannelType_CHANNEL_TYPE_ONLINE
-	case "pos":
-		return transactionv1.ChannelType_CHANNEL_TYPE_POS
-	case "api":
-		return transactionv1.ChannelType_CHANNEL_TYPE_API
+	case ONLINE:
+		return transactionv1.ChannelType_ONLINE
+	case POS:
+		return transactionv1.ChannelType_POS
+	case API:
+		return transactionv1.ChannelType_API
 	default:
 		return transactionv1.ChannelType_CHANNEL_TYPE_UNSPECIFIED
 	}

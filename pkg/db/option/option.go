@@ -270,8 +270,12 @@ func (ls LockingStrength) String() string {
 	}
 }
 
+func LockingUpdate(tx *gorm.DB) *gorm.DB {
+	return tx.Clauses(clause.Locking{Strength: LockingStrengthUpdate.String()})
+}
+
 func WithLockingUpdate() QueryOption {
 	return applyQuery(func(db *gorm.DB) *gorm.DB {
-		return db.Clauses(clause.Locking{Strength: LockingStrengthUpdate.String()})
+		return LockingUpdate(db)
 	})
 }

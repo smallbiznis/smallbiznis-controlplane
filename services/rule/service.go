@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"smallbiznis-controlplane/pkg/celengine"
 	"strconv"
 	"strings"
 	"time"
@@ -30,10 +31,9 @@ const (
 type Service struct {
 	rulev1.UnimplementedRuleServiceServer
 
-	repo      Repository
-	evaluator *Evaluator
-	logger    *zap.Logger
-	node      *snowflake.Node
+	repo   Repository
+	logger *zap.Logger
+	node   *snowflake.Node
 }
 
 // ServiceParams defines dependencies for Service construction.
@@ -41,7 +41,6 @@ type ServiceParams struct {
 	fx.In
 
 	Repository Repository
-	Evaluator  *Evaluator
 	Logger     *zap.Logger
 	Node       *snowflake.Node
 }
@@ -52,17 +51,15 @@ func NewService(p ServiceParams) *Service {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
+
 	if p.Repository == nil {
 		panic("rule service requires repository dependency")
 	}
-	if p.Evaluator == nil {
-		p.Evaluator = NewEvaluator()
-	}
+
 	return &Service{
-		repo:      p.Repository,
-		evaluator: p.Evaluator,
-		logger:    logger,
-		node:      p.Node,
+		repo:   p.Repository,
+		logger: logger,
+		node:   p.Node,
 	}
 }
 
@@ -485,10 +482,17 @@ func (s *Service) evaluateRuleResult(rule *Rule, ctxMap map[string]any) *rulev1.
 }
 
 func (s *Service) executeRule(rule *Rule, ctxMap map[string]any) (bool, *structpb.Struct, error) {
-	matched, err := s.evaluator.Evaluate(rule.DSLExpression, ctxMap)
+
+	env, err := celengine.BuildCelEnvFromAttributes(ctxMap)
 	if err != nil {
 		return false, nil, err
 	}
+
+	matched, err := celengine.Evaluate(env, rule.DSLExpression, ctxMap)
+	if err != nil {
+		return false, nil, err
+	}
+
 	if !matched {
 		return false, nil, nil
 	}

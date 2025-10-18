@@ -18,18 +18,21 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/health/grpc_health_v1"
 	"gorm.io/gorm"
 )
 
 type Service struct {
 	voucherv1.UnimplementedVoucherServiceServer
-	db              *gorm.DB
-	node            *snowflake.Node
-	seq             sequence.Generator
-	voucher         repository.Repository[Voucher]
-	voucherEvent    repository.Repository[VoucherEvent]
-	voucherCampaign repository.Repository[VoucherCampaign]
-	voucherIssue    repository.Repository[VoucherIssuance]
+	grpc_health_v1.UnimplementedHealthServer
+
+	db           *gorm.DB
+	node         *snowflake.Node
+	seq          sequence.Generator
+	campaign     repository.Repository[VoucherCampaign]
+	voucher      repository.Repository[Voucher]
+	voucherEvent repository.Repository[VoucherEvent]
+	voucherIssue repository.Repository[VoucherIssuance]
 }
 
 type ServiceParams struct {
@@ -41,14 +44,32 @@ type ServiceParams struct {
 
 func NewService(p ServiceParams) *Service {
 	return &Service{
-		db:              p.DB,
-		node:            p.Node,
-		seq:             p.Seq,
-		voucher:         repository.ProvideStore[Voucher](p.DB),
-		voucherCampaign: repository.ProvideStore[VoucherCampaign](p.DB),
-		voucherEvent:    repository.ProvideStore[VoucherEvent](p.DB),
-		voucherIssue:    repository.ProvideStore[VoucherIssuance](p.DB),
+		db:           p.DB,
+		node:         p.Node,
+		seq:          p.Seq,
+		campaign:     repository.ProvideStore[VoucherCampaign](p.DB),
+		voucher:      repository.ProvideStore[Voucher](p.DB),
+		voucherEvent: repository.ProvideStore[VoucherEvent](p.DB),
+		voucherIssue: repository.ProvideStore[VoucherIssuance](p.DB),
 	}
+}
+
+func (s *Service) Check(ctx context.Context, req *grpc_health_v1.HealthCheckRequest) (*grpc_health_v1.HealthCheckResponse, error) {
+	// You can optionally check database connectivity here:
+	sqlDB, err := s.db.DB()
+	if err != nil {
+		return nil, status.Error(codes.Internal, "db not ready")
+	}
+	if err := sqlDB.PingContext(ctx); err != nil {
+		return &grpc_health_v1.HealthCheckResponse{Status: grpc_health_v1.HealthCheckResponse_NOT_SERVING}, nil
+	}
+
+	return &grpc_health_v1.HealthCheckResponse{Status: grpc_health_v1.HealthCheckResponse_SERVING}, nil
+}
+
+func (s *Service) Watch(req *grpc_health_v1.HealthCheckRequest, srv grpc_health_v1.Health_WatchServer) error {
+	// Optional: implement streaming health status (rarely used)
+	return status.Error(codes.Unimplemented, "Watch method not implemented")
 }
 
 func (s *Service) CreateVoucher(ctx context.Context, req *voucherv1.CreateVoucherRequest) (*voucherv1.Voucher, error) {

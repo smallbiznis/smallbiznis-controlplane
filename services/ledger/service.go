@@ -9,23 +9,30 @@ import (
 	"smallbiznis-controlplane/pkg/repository"
 	"time"
 
+	health "google.golang.org/grpc/health/grpc_health_v1"
+
 	"github.com/bwmarrin/snowflake"
+	"github.com/gogo/status"
 	ledgerv1 "github.com/smallbiznis/go-genproto/smallbiznis/ledger/v1"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
 type Service struct {
-	db      *gorm.DB
-	node    *snowflake.Node
+	ledgerv1.UnimplementedLedgerServiceServer
+	health.UnimplementedHealthServer
+
+	db   *gorm.DB
+	node *snowflake.Node
+
 	ledger  repository.Repository[LedgerEntry]
 	balance repository.Repository[Balance]
 	credit  repository.Repository[CreditPool]
-	ledgerv1.UnimplementedLedgerServiceServer
 }
 
 type ServiceParams struct {
@@ -36,12 +43,31 @@ type ServiceParams struct {
 
 func NewService(p ServiceParams) *Service {
 	return &Service{
-		db:      p.DB,
-		node:    p.Node,
+		db:   p.DB,
+		node: p.Node,
+
 		ledger:  repository.ProvideStore[LedgerEntry](p.DB),
 		balance: repository.ProvideStore[Balance](p.DB),
 		credit:  repository.ProvideStore[CreditPool](p.DB),
 	}
+}
+
+func (s *Service) Check(ctx context.Context, req *health.HealthCheckRequest) (*health.HealthCheckResponse, error) {
+	// You can optionally check database connectivity here:
+	sqlDB, err := s.db.DB()
+	if err != nil {
+		return nil, status.Error(codes.Internal, "db not ready")
+	}
+	if err := sqlDB.PingContext(ctx); err != nil {
+		return &health.HealthCheckResponse{Status: health.HealthCheckResponse_NOT_SERVING}, nil
+	}
+
+	return &health.HealthCheckResponse{Status: health.HealthCheckResponse_SERVING}, nil
+}
+
+func (s *Service) Watch(req *health.HealthCheckRequest, srv health.Health_WatchServer) error {
+	// Optional: implement streaming health status (rarely used)
+	return status.Error(codes.Unimplemented, "Watch method not implemented")
 }
 
 func (s *Service) GetBalance(ctx context.Context, req *ledgerv1.GetBalanceRequest) (*ledgerv1.GetBalanceResponse, error) {
@@ -76,50 +102,37 @@ func (s *Service) GetBalance(ctx context.Context, req *ledgerv1.GetBalanceReques
 func (s *Service) AddEntry(ctx context.Context, req *ledgerv1.AddEntryRequest) (*ledgerv1.LedgerEntry, error) {
 	span := trace.SpanFromContext(ctx)
 	defer span.End()
-
 	traceID := span.SpanContext().TraceID().String()
 	spanID := span.SpanContext().SpanID().String()
+	opts := []zap.Field{zap.String("trace_id", traceID), zap.String("span_id", spanID)}
 
-	opts := []zap.Field{
-		zap.String("trace_id", traceID),
-		zap.String("span_id", spanID),
-	}
-
-	exist, err := s.ledger.FindOne(ctx, &LedgerEntry{
-		TenantID:    req.GetTenantId(),
-		ReferenceID: req.GetReferenceId(),
-	})
-	if err != nil {
-		zap.L().With(opts...).Error("failed to query FindOne entry", zap.Error(err))
-		return nil, err
-	}
-
-	if exist != nil {
-		zap.L().With(opts...).Error("failed to create new entry", zap.Error(fmt.Errorf("reference_id %s already exists", req.ReferenceId)))
-		return nil, errutil.BadRequest("failed to create new entry; reference_id already exists", nil)
+	// OPTIONAL: pre-check (UX), tapi jangan dijadikan satu-satunya pengaman
+	if exist, _ := s.ledger.FindOne(ctx, &LedgerEntry{
+		TenantID: req.GetTenantId(), ReferenceID: req.GetReferenceId(),
+	}); exist != nil {
+		zap.L().With(opts...).Warn("reference_id already exists", zap.String("reference_id", req.GetReferenceId()))
+		return nil, errutil.BadRequest("reference_id already exists", nil)
 	}
 
 	if err := s.processAddEntry(ctx, req); err != nil {
-		zap.L().Error("failed process add entry", zap.Error(err))
+		// Jika err duplicate key → balikan sebagai idempotent conflict
+		// if s.db.IsUniqueViolation(err) {
+		// 	return nil, errutil.BadRequest("reference_id already exists", nil)
+		// }
+		zap.L().With(opts...).Error("failed process add entry", zap.Error(err))
 		return nil, err
 	}
 
-	entry, err := s.ledger.FindOne(ctx, &LedgerEntry{
-		ReferenceID: req.ReferenceId,
-	})
+	entry, err := s.ledger.FindOne(ctx, &LedgerEntry{ReferenceID: req.ReferenceId})
 	if err != nil {
 		return nil, err
 	}
 
+	et, _ := ledgerv1.EntryType_value[entry.Type] // FIXME: idealnya simpan enum int
 	return &ledgerv1.LedgerEntry{
-		Id:            entry.ID,
-		TenantId:      entry.TenantID,
-		MemberId:      entry.MemberID,
-		Type:          ledgerv1.EntryType(ledgerv1.EntryType_value[entry.Type]),
-		Amount:        entry.Amount,
-		TransactionId: entry.TransactionID,
-		ReferenceId:   entry.ReferenceID,
-		Description:   entry.Description,
+		Id: entry.ID, TenantId: entry.TenantID, MemberId: entry.MemberID,
+		Type: ledgerv1.EntryType(et), Amount: entry.Amount,
+		TransactionId: entry.TransactionID, ReferenceId: entry.ReferenceID, Description: entry.Description,
 	}, nil
 }
 
@@ -137,9 +150,11 @@ func (s *Service) ReverEntry(ctx context.Context, req *ledgerv1.RevertEntryReque
 
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
 
+		tx = tx.Scopes(option.LockingUpdate)
+
 		originalEntry, err := s.ledger.WithTrx(tx).FindOne(ctx, &LedgerEntry{
 			ID: req.EntryId,
-		}, option.WithLockingUpdate())
+		})
 		if err != nil {
 			zap.L().With(opts...).Error("failed to query FindOne entry", zap.Error(err))
 			return err
@@ -190,28 +205,34 @@ func (s *Service) getLastEntry(tx *gorm.DB, ctx context.Context, req *LedgerEntr
 
 func (s *Service) processAddEntry(ctx context.Context, req *ledgerv1.AddEntryRequest) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		// 🔒 aktifkan row-level locking untuk semua query di tx ini
+		tx = tx.Scopes(option.LockingUpdate)
 
 		lastEntry, err := s.getLastEntry(tx, ctx, &LedgerEntry{
-			TenantID: req.TenantId,
-			MemberID: req.MemberId,
+			TenantID: req.TenantId, MemberID: req.MemberId,
 		})
 		if err != nil {
 			return err
 		}
 
-		// Handle DEBIT
-		if req.Type == ledgerv1.EntryType_DEBIT {
+		switch req.Type {
+		case ledgerv1.EntryType_DEBIT:
 			return s.processDebit(ctx, tx, lastEntry, req)
+		case ledgerv1.EntryType_CREDIT:
+			return s.processCredit(ctx, tx, lastEntry, req)
+		default:
+			return errutil.BadRequest("unsupported entry type", nil)
 		}
-
-		// Handle CREDIT
-		return s.processCredit(ctx, tx, lastEntry, req)
 	})
 }
 
 func (s *Service) processDebit(ctx context.Context, tx *gorm.DB, lastEntry *LedgerEntry, req *ledgerv1.AddEntryRequest) error {
 
-	entries, err := s.credit.WithTrx(tx).Find(ctx, &CreditPool{
+	creditTx := s.credit.WithTrx(tx)
+	balanceTx := s.balance.WithTrx(tx)
+	ledgerTx := s.ledger.WithTrx(tx)
+
+	entries, err := creditTx.Find(ctx, &CreditPool{
 		TenantID: req.TenantId,
 		MemberID: req.MemberId,
 	},
@@ -229,7 +250,6 @@ func (s *Service) processDebit(ctx context.Context, tx *gorm.DB, lastEntry *Ledg
 				},
 			},
 		),
-		option.WithLockingUpdate(),
 	)
 	if err != nil {
 		return err
@@ -245,12 +265,10 @@ func (s *Service) processDebit(ctx context.Context, tx *gorm.DB, lastEntry *Ledg
 		return err
 	}
 
-	balance, err := s.balance.FindOne(ctx, &Balance{
+	balance, err := balanceTx.FindOne(ctx, &Balance{
 		TenantID: req.GetTenantId(),
 		MemberID: req.GetMemberId(),
-	},
-		option.WithLockingUpdate(),
-	)
+	})
 	if err != nil {
 		return err
 	}
@@ -318,7 +336,7 @@ func (s *Service) processDebit(ctx context.Context, tx *gorm.DB, lastEntry *Ledg
 	})
 	entry.Hash = entry.GenerateHash()
 
-	if err := s.ledger.WithTrx(tx).Create(ctx, entry); err != nil {
+	if err := ledgerTx.Create(ctx, entry); err != nil {
 		return err
 	}
 
@@ -327,17 +345,22 @@ func (s *Service) processDebit(ctx context.Context, tx *gorm.DB, lastEntry *Ledg
 			"remaining":   gorm.Expr("remaining - ?", alloc.Amount),
 			"consumed_at": time.Now(),
 		}
-		if err := s.credit.WithTrx(tx).Update(ctx, alloc.CreditPoolID, &updates); err != nil {
+
+		if err := creditTx.Update(ctx, alloc.CreditPoolID, &updates); err != nil {
 			zap.L().Error("failed to update credit pools", zap.Error(err))
 			return err
 		}
+	}
+
+	if balance.Balance < req.Amount {
+		return fmt.Errorf("insufficient points (balance changed)")
 	}
 
 	updates := map[string]any{
 		"balance":    gorm.Expr("balance - ?", req.Amount),
 		"updated_at": time.Now(),
 	}
-	if err := s.balance.WithTrx(tx).Update(ctx, balance.ID, &updates); err != nil {
+	if err := balanceTx.Update(ctx, balance.ID, &updates); err != nil {
 		return err
 	}
 
@@ -345,15 +368,22 @@ func (s *Service) processDebit(ctx context.Context, tx *gorm.DB, lastEntry *Ledg
 }
 
 func (s *Service) processCredit(ctx context.Context, tx *gorm.DB, lastEntry *LedgerEntry, req *ledgerv1.AddEntryRequest) error {
+	if req.Amount <= 0 {
+		return errutil.BadRequest("amount must be > 0 for CREDIT", nil)
+	}
+
 	var (
-		previousHash    string = "GENESIS"
-		previousBalance int64  = 0
+		previousHash          = "GENESIS"
+		previousBalance int64 = 0
 	)
 
-	balance, err := s.balance.WithTrx(tx).FindOne(ctx, &Balance{
-		TenantID: req.GetTenantId(),
-		MemberID: req.GetMemberId(),
-	}, option.WithLockingUpdate())
+	balanceTx := s.balance.WithTrx(tx)
+	creditTx := s.credit.WithTrx(tx)
+	ledgerTx := s.ledger.WithTrx(tx)
+
+	balance, err := balanceTx.FindOne(ctx, &Balance{
+		TenantID: req.GetTenantId(), MemberID: req.GetMemberId(),
+	})
 	if err != nil {
 		zap.L().Error("failed to query balance", zap.Error(err))
 		return err
@@ -361,69 +391,52 @@ func (s *Service) processCredit(ctx context.Context, tx *gorm.DB, lastEntry *Led
 
 	transactionID, err := GenerateTransactionID()
 	if err != nil {
-		zap.L().Error("failed to generate transactionId", zap.Error(err))
 		return err
 	}
 
 	ledgerEntryID := s.node.Generate().String()
 	metaBytes, _ := json.Marshal(req.Metadata)
 	entry := NewLedgerEntry(LedgerParams{
-		LedgerID:      ledgerEntryID,
-		TenantID:      req.GetTenantId(),
-		MemberID:      req.GetMemberId(),
-		Type:          req.Type.String(),
-		Amount:        req.Amount,
-		TransactionID: transactionID,
-		ReferenceID:   req.ReferenceId,
-		Description:   req.Description,
-		Metadata:      datatypes.JSON(metaBytes),
+		LedgerID: ledgerEntryID, TenantID: req.GetTenantId(), MemberID: req.GetMemberId(),
+		Type: req.Type.String(), Amount: req.Amount, TransactionID: transactionID,
+		ReferenceID: req.ReferenceId, Description: req.Description, Metadata: datatypes.JSON(metaBytes),
 	})
 
 	if lastEntry != nil {
 		previousHash = lastEntry.Hash
+	}
+
+	if balance != nil {
 		previousBalance = balance.Balance
 	}
 
 	entry.PreviousHash = previousHash
 	entry.Hash = entry.GenerateHash()
 
-	if err := s.ledger.WithTrx(tx).Create(ctx, entry); err != nil {
-		zap.L().Error("failed to create entry", zap.Error(err))
+	if err := ledgerTx.Create(ctx, entry); err != nil {
 		return err
 	}
 
-	creditPoolID := s.node.Generate().String()
-	if err := s.credit.WithTrx(tx).Create(ctx, &CreditPool{
-		ID:            creditPoolID,
-		TenantID:      req.GetTenantId(),
-		MemberID:      req.GetMemberId(),
-		LedgerEntryID: entry.ID,
-		Remaining:     req.Amount,
-		CreatedAt:     time.Now(),
+	// credit pool
+	if err := creditTx.Create(ctx, &CreditPool{
+		ID: s.node.Generate().String(), TenantID: req.GetTenantId(), MemberID: req.GetMemberId(),
+		LedgerEntryID: entry.ID, Remaining: req.Amount, CreatedAt: time.Now(),
 	}); err != nil {
-		zap.L().Error("failed to create credit pools", zap.Error(err))
 		return err
 	}
 
+	// upsert/update balance (masih di tx + locked)
 	if balance == nil {
-		balanceID := s.node.Generate().String()
-		if err := s.balance.WithTrx(tx).Create(ctx, &Balance{
-			ID:        balanceID,
-			TenantID:  req.GetTenantId(),
-			MemberID:  req.GetMemberId(),
-			Balance:   entry.Amount,
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
+		if err := balanceTx.Create(ctx, &Balance{
+			ID: s.node.Generate().String(), TenantID: req.GetTenantId(), MemberID: req.GetMemberId(),
+			Balance: previousBalance + entry.Amount, CreatedAt: time.Now(), UpdatedAt: time.Now(),
 		}); err != nil {
-			zap.L().Error("failed to create balance", zap.Error(err))
 			return err
 		}
 	} else {
-		if err := s.balance.WithTrx(tx).Update(ctx, balance.ID, &Balance{
-			Balance:   entry.Amount + previousBalance,
-			UpdatedAt: time.Now(),
+		if err := balanceTx.Update(ctx, balance.ID, &Balance{
+			Balance: previousBalance + entry.Amount, UpdatedAt: time.Now(),
 		}); err != nil {
-			zap.L().Error("failed to update balance", zap.Error(err))
 			return err
 		}
 	}
@@ -433,12 +446,11 @@ func (s *Service) processCredit(ctx context.Context, tx *gorm.DB, lastEntry *Led
 
 func (s *Service) processRevertCredit(ctx context.Context, tx *gorm.DB, lastEntry *LedgerEntry) error {
 
-	balance, err := s.balance.FindOne(ctx, &Balance{
+	balanceTx := s.balance.WithTrx(tx)
+	balance, err := balanceTx.FindOne(ctx, &Balance{
 		TenantID: lastEntry.TenantID,
 		MemberID: lastEntry.MemberID,
-	},
-		option.WithLockingUpdate(),
-	)
+	})
 	if err != nil {
 		return err
 	}
@@ -474,7 +486,7 @@ func (s *Service) processRevertCredit(ctx context.Context, tx *gorm.DB, lastEntr
 		return err
 	}
 
-	return s.balance.WithTrx(tx).Update(ctx, balance.ID, &Balance{
+	return balanceTx.Update(ctx, balance.ID, &Balance{
 		Balance:   balance.Balance - lastEntry.Amount,
 		UpdatedAt: time.Now(),
 	})

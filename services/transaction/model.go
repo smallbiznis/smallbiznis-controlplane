@@ -12,21 +12,77 @@ import (
 	"gorm.io/datatypes"
 )
 
+type PaymentMethod string
+
+var (
+	CASH     PaymentMethod = "CASH"
+	CARD     PaymentMethod = "CARD"
+	QRIS     PaymentMethod = "QRIS"
+	TRANSFER PaymentMethod = "TRANSFER"
+	WALLET   PaymentMethod = "WALLET"
+)
+
+func (m PaymentMethod) String() string {
+	switch m {
+	case CASH, CARD, QRIS, TRANSFER, WALLET:
+		return string(m)
+	default:
+		return ""
+	}
+}
+
+type Channel string
+
+var (
+	ONLINE Channel = "ONLINE"
+	POS    Channel = "POS"
+	API    Channel = "API"
+)
+
+func (m Channel) String() string {
+	switch m {
+	case ONLINE, POS, API:
+		return string(m)
+	default:
+		return ""
+	}
+}
+
+type Status string
+
+var (
+	PENDING   Status = "PENDING"
+	SUCCESS   Status = "SUCCESS"
+	FAILED    Status = "FAILED"
+	CANCELLED Status = "CANCALLED"
+	REFUNDED  Status = "REFUNDED"
+)
+
+func (m Status) String() string {
+	switch m {
+	case PENDING, SUCCESS, FAILED, CANCELLED, REFUNDED:
+		return string(m)
+	default:
+		return ""
+	}
+}
+
 // Transaction represents financial transaction per tenant
 type Transaction struct {
-	TransactionID   snowflake.ID   `gorm:"column:transaction_id;primaryKey;autoIncrement:false"`
-	TransactionCode string         `gorm:"column:transaction_code;uniqueIndex"`
-	TenantID        snowflake.ID   `gorm:"column:tenant_id;index;not null"`
-	UserID          snowflake.ID   `gorm:"column:user_id;index;not null"`
-	OrderID         string         `gorm:"column:order_id;index"`
-	Amount          float64        `gorm:"column:amount;not null"`
-	CurrencyCode    string         `gorm:"column:currency_code;default:'IDR'"`
-	Status          string         `gorm:"column:status;default:'pending'"` // pending, success, failed, cancelled, refunded
-	PaymentMethod   string         `gorm:"column:payment_method"`
-	Channel         string         `gorm:"column:channel"`
-	Metadata        datatypes.JSON `gorm:"column:metadata;type:jsonb"`
-	CreatedAt       time.Time      `gorm:"column:created_at;autoCreateTime"`
-	UpdatedAt       time.Time      `gorm:"column:updated_at;autoUpdateTime"`
+	ID            string            `gorm:"column:id;primaryKey;autoIncrement:false"`
+	TransactionID string            `gorm:"column:transaction_id;uniqueIndex"`
+	TenantID      string            `gorm:"column:tenant_id;index;not null"`
+	UserID        string            `gorm:"column:user_id;index;not null"`
+	OrderID       string            `gorm:"column:order_id;index"`
+	Amount        float64           `gorm:"column:amount;not null"`
+	CurrencyCode  string            `gorm:"column:currency_code;default:'IDR'"`
+	Status        Status            `gorm:"column:status;default:'pending'"` // pending, success, failed, cancelled, refunded
+	PaymentMethod PaymentMethod     `gorm:"column:payment_method"`
+	Channel       Channel           `gorm:"column:channel"`
+	Metadata      datatypes.JSON    `gorm:"column:metadata;type:jsonb"`
+	CreatedAt     time.Time         `gorm:"column:created_at;autoCreateTime"`
+	UpdatedAt     time.Time         `gorm:"column:updated_at;autoUpdateTime"`
+	ItemLines     []TransactionItem `gorm:"foreignKey:TransactionID"`
 }
 
 // ToProto converts Transaction to gRPC proto message
@@ -37,9 +93,10 @@ func (t *Transaction) ToProto() *transactionv1.Transaction {
 	}
 
 	return &transactionv1.Transaction{
-		TransactionId: t.TransactionID.String(),
-		TenantId:      t.TenantID.String(),
-		UserId:        t.UserID.String(),
+		Id:            t.ID,
+		TenantId:      t.TenantID,
+		UserId:        t.UserID,
+		TransactionId: t.TransactionID,
 		OrderId:       t.OrderID,
 		Amount: &commonv1.Money{
 			CurrencyCode: t.CurrencyCode,
@@ -56,8 +113,8 @@ func (t *Transaction) ToProto() *transactionv1.Transaction {
 
 type TransactionItem struct {
 	ItemID        snowflake.ID   `gorm:"column:item_id;primaryKey;autoIncrement"`
-	TransactionID snowflake.ID   `gorm:"column:transaction_id;index;not null"`
-	TenantID      snowflake.ID   `gorm:"column:tenant_id;index;not null"`
+	TransactionID string         `gorm:"column:transaction_id;index;not null"`
+	TenantID      string         `gorm:"column:tenant_id;index;not null"`
 	SKU           string         `gorm:"column:sku;not null"`
 	Name          string         `gorm:"column:name;not null"`
 	Category      string         `gorm:"column:category"`
@@ -78,8 +135,8 @@ func (i *TransactionItem) ToProto() *transactionv1.TransactionItem {
 
 	return &transactionv1.TransactionItem{
 		ItemId:        fmt.Sprintf("%d", i.ItemID),
-		TransactionId: fmt.Sprintf("%d", i.TransactionID),
-		TenantId:      fmt.Sprintf("%d", i.TenantID),
+		TransactionId: i.TransactionID,
+		TenantId:      i.TenantID,
 		Sku:           i.SKU,
 		Name:          i.Name,
 		Category:      i.Category,

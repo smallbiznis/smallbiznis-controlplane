@@ -11,6 +11,7 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/health/grpc_health_v1"
 )
 
 var Module = fx.Module("tenant.service",
@@ -24,6 +25,7 @@ var Gateway = fx.Module("tenant.gateway",
 
 func registerServiceServer(server *grpc.Server, service *Service) {
 	tenantv1.RegisterTenantServiceServer(server, service)
+	grpc_health_v1.RegisterHealthServer(server, service)
 }
 
 type registerServiceHandlerParams struct {

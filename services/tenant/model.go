@@ -61,6 +61,7 @@ func (m *Tenant) ToProto() *tenantv1.Tenant {
 	return &tenantv1.Tenant{
 		TenantId:    m.ID,
 		Type:        string(m.Type),
+		Code:        m.Code,
 		Name:        m.Name,
 		Slug:        m.Slug,
 		CountryCode: m.CountryCode,
