@@ -23,7 +23,7 @@ require (
 	github.com/miekg/dns v1.1.68
 	github.com/minio/minio-go/v7 v7.0.95
 	github.com/redis/go-redis/v9 v9.14.0
-	github.com/smallbiznis/go-genproto v0.0.0-20251018175043-c3456cbd81da
+	github.com/smallbiznis/go-genproto v0.0.0-20251021064213-45b286db663d
 	github.com/spf13/viper v1.21.0
 	github.com/spf13/viper/remote v1.20.1
 	github.com/stretchr/testify v1.11.1

@@ -7,15 +7,16 @@ import (
 	"time"
 
 	"github.com/bwmarrin/snowflake"
-	"github.com/gogo/status"
+	"github.com/hibiken/asynq"
 	ledgerv1 "github.com/smallbiznis/go-genproto/smallbiznis/ledger/v1"
 	loyaltyv1 "github.com/smallbiznis/go-genproto/smallbiznis/loyalty/v1"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
@@ -25,40 +26,25 @@ type Service struct {
 
 	db     *gorm.DB
 	node   *snowflake.Node
+	asynq  *asynq.Client
 	ledger ledgerv1.LedgerServiceClient
 }
 
-type Params struct {
+type ServiceParams struct {
 	fx.In
 	DB     *gorm.DB
 	Node   *snowflake.Node
-	Ledger ledgerv1.LedgerServiceClient
+	Asynq  *asynq.Client
+	Ledger ledgerv1.LedgerServiceClient `optional:"true"`
 }
 
-func NewService(p Params) *Service {
+func NewService(p ServiceParams) *Service {
 	return &Service{
 		db:     p.DB,
 		node:   p.Node,
+		asynq:  p.Asynq,
 		ledger: p.Ledger,
 	}
-}
-
-func (s *Service) Check(ctx context.Context, req *grpc_health_v1.HealthCheckRequest) (*grpc_health_v1.HealthCheckResponse, error) {
-	// You can optionally check database connectivity here:
-	sqlDB, err := s.db.DB()
-	if err != nil {
-		return nil, status.Error(codes.Internal, "db not ready")
-	}
-	if err := sqlDB.PingContext(ctx); err != nil {
-		return &grpc_health_v1.HealthCheckResponse{Status: grpc_health_v1.HealthCheckResponse_NOT_SERVING}, nil
-	}
-
-	return &grpc_health_v1.HealthCheckResponse{Status: grpc_health_v1.HealthCheckResponse_SERVING}, nil
-}
-
-func (s *Service) Watch(req *grpc_health_v1.HealthCheckRequest, srv grpc_health_v1.Health_WatchServer) error {
-	// Optional: implement streaming health status (rarely used)
-	return status.Error(codes.Unimplemented, "Watch method not implemented")
 }
 
 func (s *Service) GetBalance(ctx context.Context, req *loyaltyv1.GetBalanceRequest) (*loyaltyv1.GetBalanceResponse, error) {
@@ -129,26 +115,18 @@ func (s *Service) Earning(ctx context.Context, req *loyaltyv1.EarningRequest) (*
 
 	zapLog := zap.L().With(traceOpt...)
 
-	// contoh kalkulasi sementara
-	var amount int64
-	if tx := req.GetTransaction(); tx != nil && tx.Amount != nil {
-		amount = tx.Amount.Amount
-	}
-	zapLog.Info("Amount", zap.Int64("amount", req.GetTransaction().Amount.Amount))
-	point := amount / 1000
-
-	earningID := s.node.Generate()
+	earningID := s.node.Generate().String()
 	earning := PointTransaction{
 		ID:          earningID,
 		TenantID:    req.TenantId,
 		MemberID:    req.UserId,
 		ReferenceID: req.ReferenceId,
 		Type:        Earning,
-		PointDelta:  point,
-		Status:      "pending",
+		PointDelta:  0,
+		Status:      loyaltyv1.Status_PENDING.String(),
 	}
-	if attr, err := json.Marshal(req); err == nil {
-		earning.Metadata = attr
+	if attr, err := protojson.Marshal(req); err == nil {
+		earning.Metadata = datatypes.JSON(attr)
 	}
 
 	if err := s.db.WithContext(ctx).Create(&earning).Error; err != nil {
@@ -156,31 +134,26 @@ func (s *Service) Earning(ctx context.Context, req *loyaltyv1.EarningRequest) (*
 		return nil, err
 	}
 
-	// 🔹 call LedgerService untuk tambah poin
-	_, err := s.ledger.AddEntry(ctx, &ledgerv1.AddEntryRequest{
-		TenantId:    req.TenantId,
-		MemberId:    req.UserId,
-		ReferenceId: req.ReferenceId,
-		Type:        ledgerv1.EntryType_CREDIT,
-		Amount:      point,
-		Metadata:    nil,
+	p, _ := json.Marshal(ProcessEarningPayload{
+		EarningID:   earningID,
+		TenantID:    req.GetTenantId(),
+		UserID:      req.GetUserId(),
+		ReferenceID: req.GetReferenceId(),
+		EventType:   req.GetEventType(),
+		TraceID:     traceID,
 	})
-	if err != nil {
-		zapLog.Error("failed to call ledger service", zap.Error(err))
-		s.db.WithContext(ctx).Model(&earning).Update("status", "failed")
+	if _, err := s.asynq.EnqueueContext(ctx,
+		asynq.NewTask(LoyaltyProcessEarning, p),
+		asynq.Queue("loyalty"),
+		asynq.MaxRetry(3),
+	); err != nil {
+		zapLog.Error("failed to enqueue loyalty earning", zap.Error(err))
 		return nil, err
 	}
 
-	update := map[string]interface{}{
-		"status":      "success",
-		"expire_date": DefaultEndOfYearDate(),
-	}
-
-	s.db.WithContext(ctx).Model(&earning).Updates(update)
-
 	return &loyaltyv1.EarningResponse{
-		TransactionId: earning.ID.String(),
-		Status:        loyaltyv1.Status_SUCCESS,
+		TransactionId: earning.ID,
+		Status:        loyaltyv1.Status_PENDING,
 		CreatedAt:     timestamppbNow(),
 	}, nil
 }
@@ -200,7 +173,7 @@ func (s *Service) Redemption(ctx context.Context, req *loyaltyv1.RedeemRequest) 
 
 	zapLog := zap.L().With(traceOpt...)
 
-	redemptionID := s.node.Generate()
+	redemptionID := s.node.Generate().String()
 	red := PointTransaction{
 		ID:          redemptionID,
 		TenantID:    req.TenantId,
@@ -210,7 +183,7 @@ func (s *Service) Redemption(ctx context.Context, req *loyaltyv1.RedeemRequest) 
 		RewardID:    req.RewardId,
 		RewardType:  req.RewardType.String(),
 		PointDelta:  0,
-		Status:      "pending",
+		Status:      loyaltyv1.Status_PENDING.String(),
 	}
 	if meta, err := json.Marshal(req); err == nil {
 		red.Metadata = meta
@@ -237,9 +210,9 @@ func (s *Service) Redemption(ctx context.Context, req *loyaltyv1.RedeemRequest) 
 
 	// call ledger service: deduct points
 	_, err = s.ledger.AddEntry(ctx, &ledgerv1.AddEntryRequest{
-		TenantId:    req.TenantId,
-		MemberId:    req.UserId,
-		ReferenceId: req.ReferenceId,
+		TenantId:    req.GetTenantId(),
+		MemberId:    req.GetUserId(),
+		ReferenceId: req.GetReferenceId(),
 		Type:        ledgerv1.EntryType_DEBIT,
 		Amount:      required,
 	})
@@ -250,14 +223,14 @@ func (s *Service) Redemption(ctx context.Context, req *loyaltyv1.RedeemRequest) 
 
 	now := time.Now()
 	s.db.WithContext(ctx).Model(&red).Updates(map[string]interface{}{
-		"status":       "success",
+		"status":       Success,
 		"processed_at": now,
 		"point_delta":  required,
 	})
 
 	return &loyaltyv1.RedeemResponse{
 		ReferenceId:   req.ReferenceId,
-		TransactionId: red.ID.String(),
+		TransactionId: red.ID,
 		Status:        loyaltyv1.Status_SUCCESS,
 		RedeemedAt:    timestamppbNow(),
 	}, nil

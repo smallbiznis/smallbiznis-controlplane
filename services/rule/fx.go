@@ -9,6 +9,7 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/health/grpc_health_v1"
 )
 
 var Module = fx.Module("rule.service",
@@ -26,6 +27,7 @@ var Gateway = fx.Module("rule.gateway",
 // RegisterGRPCServer registers the Rule service with the gRPC server.
 func RegisterGRPCServer(server *grpc.Server, service *Service) {
 	rulev1.RegisterRuleServiceServer(server, service)
+	grpc_health_v1.RegisterHealthServer(server, service)
 }
 
 type registerServiceHandlerParams struct {

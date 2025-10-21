@@ -55,6 +55,20 @@ DATABASE:
     CONN_MAX_LIFETIME: 1h
     CONN_MAX_IDLE_TIME: 1h
 
+REDIS:
+  ADDR: redis:6379
+  PASSWORD: ''
+  DB: 0
+  POOL_SIZE: 10
+  POOL_TIMEOUT: 30s
+
+ASYNQ:
+  WORKER_COUNT: 10
+  QUEUES:
+    CRITICAL: 6
+    DEFAULLT: 3
+    LOW: 1
+
 SESSION:
   NAME: _SID # default _SID
   TYPE: cookie # cookie, redis
@@ -86,5 +100,8 @@ TEMPORAL:
 PYROSCOPE:
   ADDR: http://localhost:4040
 
-RULE_ENGINE_URL: localhost:4317
-LEDGER_URL: localhost:4317
+RULE_ENGINE_URL: rule:4317
+LOYALTY_URL: loyalty:4317
+LEDGER_URL: ledger:4317
+TENANT_URL: tenant:4317
+VOUCHER_URL: voucher:4317

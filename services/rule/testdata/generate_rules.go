@@ -34,17 +34,24 @@ func GenerateTestRules(db *gorm.DB) error {
 	}
 
 	type voucherAction struct {
-		VoucherCode   string            `json:"voucherCode"`
-		DiscountValue float64           `json:"discountValue"`
-		DiscountType  string            `json:"discountType"`
-		ExpiryDate    time.Time         `json:"expiryDate"`
+		VoucherCode   string            `json:"voucher_code"`
+		DiscountValue float64           `json:"discount_value"`
+		DiscountType  string            `json:"discount_type"`
+		ExpiryDate    time.Time         `json:"expiry_date"`
 		Metadata      map[string]string `json:"metadata,omitempty"`
+	}
+
+	type notifyAction struct {
+		Channel    string            `json:"channel,omitempty"`
+		TemplateID string            `json:"template_id,omitempty"`
+		Metadata   map[string]string `json:"metadata,omitempty"`
 	}
 
 	type ruleAction struct {
 		Type          string         `json:"type"`
-		PointAction   *pointAction   `json:"pointAction,omitempty"`
-		VoucherAction *voucherAction `json:"voucherAction,omitempty"`
+		PointAction   *pointAction   `json:"point_action,omitempty"`
+		VoucherAction *voucherAction `json:"voucher_action,omitempty"`
+		NotifyAction  *notifyAction  `json:"notif_action,omitempty"`
 	}
 
 	makeActions := func(actions []ruleAction) datatypes.JSON {
@@ -64,7 +71,7 @@ func GenerateTestRules(db *gorm.DB) error {
 			DSLExpression: `is_new_user == true`,
 			Actions: makeActions([]ruleAction{
 				{
-					Type: "RULE_ACTION_TYPE_REWARD_POINT",
+					Type: rulev1.RuleActionType_RULE_ACTION_TYPE_REWARD_POINT.String(),
 					PointAction: &pointAction{
 						Points:    100,
 						Reference: "welcome_bonus",
@@ -86,7 +93,7 @@ func GenerateTestRules(db *gorm.DB) error {
 			DSLExpression: `user_tier == "gold" && total_spent > 1000000`,
 			Actions: makeActions([]ruleAction{
 				{
-					Type: "RULE_ACTION_TYPE_REWARD_POINT",
+					Type: rulev1.RuleActionType_RULE_ACTION_TYPE_REWARD_POINT.String(),
 					PointAction: &pointAction{
 						Points:    500,
 						Reference: "gold_reward",
@@ -108,13 +115,87 @@ func GenerateTestRules(db *gorm.DB) error {
 			DSLExpression: `purchase_count >= 10`,
 			Actions: makeActions([]ruleAction{
 				{
-					Type: "RULE_ACTION_TYPE_VOUCHER",
+					Type: rulev1.RuleActionType_RULE_ACTION_TYPE_VOUCHER.String(),
 					VoucherAction: &voucherAction{
 						VoucherCode:   "LOYAL10",
 						DiscountValue: 10,
 						DiscountType:  "percent",
 						ExpiryDate:    now.AddDate(0, 1, 0),
 						Metadata:      map[string]string{"campaign": "loyalty_reward"},
+					},
+				},
+			}),
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			RuleID:        node.Generate().String(),
+			TenantID:      tenantID,
+			Name:          "Small Purchase Bonus",
+			Description:   "Reward 50 points for purchases between 100K–500K",
+			IsActive:      true,
+			Priority:      1,
+			Trigger:       rulev1.RuleTriggerType_RULE_TRIGGER_TYPE_PURCHASE,
+			DSLExpression: `total_spent >= 100000 && total_spent < 500000`,
+			Actions: makeActions([]ruleAction{
+				{
+					Type: rulev1.RuleActionType_RULE_ACTION_TYPE_REWARD_POINT.String(),
+					PointAction: &pointAction{
+						Points:    50,
+						Reference: "small_purchase_bonus",
+						Metadata:  map[string]string{"segment": "small"},
+					},
+				},
+			}),
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			RuleID:        node.Generate().String(),
+			TenantID:      tenantID,
+			Name:          "Medium Purchase Bonus",
+			Description:   "Reward 150 points for purchases between 500K–1M",
+			IsActive:      true,
+			Priority:      2,
+			Trigger:       rulev1.RuleTriggerType_RULE_TRIGGER_TYPE_PURCHASE,
+			DSLExpression: `total_spent >= 500000 && total_spent < 1000000`,
+			Actions: makeActions([]ruleAction{
+				{
+					Type: rulev1.RuleActionType_RULE_ACTION_TYPE_REWARD_POINT.String(),
+					PointAction: &pointAction{
+						Points:    150,
+						Reference: "medium_purchase_bonus",
+						Metadata:  map[string]string{"segment": "medium"},
+					},
+				},
+			}),
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			RuleID:        node.Generate().String(),
+			TenantID:      tenantID,
+			Name:          "Big Spender Reward",
+			Description:   "Reward 500 points and send notification for purchases over 1M",
+			IsActive:      true,
+			Priority:      3,
+			Trigger:       rulev1.RuleTriggerType_RULE_TRIGGER_TYPE_PURCHASE,
+			DSLExpression: `total_spent >= 1000000`,
+			Actions: makeActions([]ruleAction{
+				{
+					Type: rulev1.RuleActionType_RULE_ACTION_TYPE_REWARD_POINT.String(),
+					PointAction: &pointAction{
+						Points:    500,
+						Reference: "big_spender_bonus",
+						Metadata:  map[string]string{"segment": "big"},
+					},
+				},
+				{
+					Type: rulev1.RuleActionType_RULE_ACTION_TYPE_NOTIFY.String(),
+					NotifyAction: &notifyAction{
+						Channel:    "email",
+						TemplateID: "notify-big-spender",
+						Metadata:   map[string]string{"type": "reward_notification"},
 					},
 				},
 			}),

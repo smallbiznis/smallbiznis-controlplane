@@ -54,7 +54,7 @@ func (g *RedisGenerator) NextCampaignCode(ctx context.Context, tenantCode string
 }
 
 func (g *RedisGenerator) NextVoucherCode(ctx context.Context, tenantCode, campaignCode string) (string, error) {
-	today := time.Now().Format("20060102")
+	today := time.Now().UTC().Format("20060102")
 	key := fmt.Sprintf("seq:VCHR:%s:%s:%s", tenantCode, campaignCode, today)
 
 	seq, err := g.rdb.Incr(ctx, key).Result()
@@ -71,7 +71,7 @@ func (g *RedisGenerator) NextVoucherCode(ctx context.Context, tenantCode, campai
 }
 
 func (g *RedisGenerator) nextDailyCode(ctx context.Context, prefix, tenantCode string, includeTenantInCode bool) (string, error) {
-	today := time.Now().Format("20060102")
+	today := time.Now().UTC().Format("20060102")
 	key := fmt.Sprintf("seq:%s:%s:%s", prefix, tenantCode, today)
 
 	seq, err := g.rdb.Incr(ctx, key).Result()

@@ -42,11 +42,11 @@ SECRET_AES:
 
 DATABASE:
   TYPE: postgres
-  HOST: localhost
-  PORT: '5433'
+  HOST: postgres
+  PORT: '5432'
   USER: postgres
   PASSWORD: 35411231
-  DBNAME: postgres
+  DBNAME: rule
   SSLMODE: disable # disable, enable
   TIMEZONE: Asia/Jakarta # Local, Asia/Jakarta etc
   CONNECTION_POOL:

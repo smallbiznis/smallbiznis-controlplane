@@ -3,9 +3,24 @@ package loyalty
 import (
 	"time"
 
-	"github.com/bwmarrin/snowflake"
 	"gorm.io/datatypes"
 )
+
+type Status string
+
+var (
+	Pending Status = "pending"
+	Success Status = "success"
+)
+
+func (s Status) String() string {
+	switch s {
+	case Pending, Success:
+		return string(s)
+	default:
+		return ""
+	}
+}
 
 type TransactionType string
 
@@ -27,17 +42,18 @@ func (t TransactionType) String() string {
 }
 
 type PointTransaction struct {
-	ID          snowflake.ID    `gorm:"column:id;primaryKey;type:char(26)"`
-	CreatedAt   time.Time       `gorm:"column:created_at"`
-	UpdatedAt   time.Time       `gorm:"column:updated_at"`
-	TenantID    string          `gorm:"column:tenant_id;index;not null"`
-	MemberID    string          `gorm:"column:member_id;index;not null"`
+	ID        string    `gorm:"column:id;primaryKey;type:char(26)"`
+	CreatedAt time.Time `gorm:"column:created_at"`
+	UpdatedAt time.Time `gorm:"column:updated_at"`
+	TenantID  string    `gorm:"column:tenant_id;index;not null"`
+	MemberID  string    `gorm:"column:member_id;index;not null"`
+	// TransactionID string          `gorm:"column:transaction_id"`
 	ReferenceID string          `gorm:"column:reference_id;index;not null"`
-	Type        TransactionType `gorm:"column:type;type:varchar(20);not null"` // "earn" | "redeem" | "adjust" | "expire"
+	Type        TransactionType `gorm:"column:type;type:varchar(20);not null"` // "earning" | "redeem" | "adjustment" | "expire"
 	RuleID      string          `gorm:"column:rule_id;index"`
 	RewardID    string          `gorm:"column:reward_id;index"`
 	RewardType  string          `gorm:"column:reward_type;type:varchar(30)"`
-	PointDelta  int64           `gorm:"column:point_delta;not null"` // +ve for earn, -ve for redeem
+	PointDelta  int64           `gorm:"column:point_delta;not null"` // +ve for earning, -ve for redeem
 	Status      string          `gorm:"column:status;type:varchar(20);default:'pending'"`
 	Description string          `gorm:"column:description;type:text"`
 	Metadata    datatypes.JSON  `gorm:"column:metadata;type:jsonb"`

@@ -24,53 +24,6 @@ type Rule struct {
 	UpdatedAt     time.Time              `gorm:"column:updated_at"`
 }
 
-// RuleAction describes a rule action payload stored as JSON.
-type RuleAction struct {
-	Type           rulev1.RuleActionType `json:"type"`
-	PointAction    *PointAction          `json:"point_action,omitempty"`
-	VoucherAction  *VoucherAction        `json:"voucher_action,omitempty"`
-	CashbackAction *CashbackAction       `json:"cashback_action,omitempty"`
-	NotifyAction   *NotifyAction         `json:"notify_action,omitempty"`
-	TagAction      *TagAction            `json:"tag_action,omitempty"`
-}
-
-// PointAction mirrors rulev1.PointAction for JSON storage.
-type PointAction struct {
-	Points    int64             `json:"points"`
-	Reference string            `json:"reference,omitempty"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
-}
-
-// VoucherAction mirrors rulev1.VoucherAction for JSON storage.
-type VoucherAction struct {
-	VoucherCode   string            `json:"voucher_code"`
-	DiscountValue float64           `json:"discount_value"`
-	DiscountType  string            `json:"discount_type"`
-	ExpiryDate    *time.Time        `json:"expiry_date,omitempty"`
-	Metadata      map[string]string `json:"metadata,omitempty"`
-}
-
-// CashbackAction mirrors rulev1.CashbackAction for JSON storage.
-type CashbackAction struct {
-	Amount         float64           `json:"amount"`
-	Currency       string            `json:"currency,omitempty"`
-	TargetWalletID string            `json:"target_wallet_id,omitempty"`
-	Metadata       map[string]string `json:"metadata,omitempty"`
-}
-
-// NotifyAction mirrors rulev1.NotifyAction for JSON storage.
-type NotifyAction struct {
-	Channel    string            `json:"channel,omitempty"`
-	TemplateID string            `json:"template_id,omitempty"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
-}
-
-// TagAction mirrors rulev1.TagAction for JSON storage.
-type TagAction struct {
-	TagKey   string `json:"tag_key,omitempty"`
-	TagValue string `json:"tag_value,omitempty"`
-}
-
 // SetActions serialises the provided actions list into the JSON column.
 func (r *Rule) SetActions(actions []RuleAction) error {
 	if len(actions) == 0 {
@@ -135,6 +88,84 @@ func (r *Rule) ToProto() (*rulev1.Rule, error) {
 	}
 
 	return out, nil
+}
+
+// RuleAction describes a rule action payload stored as JSON.
+type RuleAction struct {
+	Type           rulev1.RuleActionType `json:"type"`
+	PointAction    *PointAction          `json:"point_action,omitempty"`
+	VoucherAction  *VoucherAction        `json:"voucher_action,omitempty"`
+	CashbackAction *CashbackAction       `json:"cashback_action,omitempty"`
+	NotifyAction   *NotifyAction         `json:"notify_action,omitempty"`
+	TagAction      *TagAction            `json:"tag_action,omitempty"`
+}
+
+func (r *RuleAction) UnmarshalJSON(data []byte) error {
+	type Alias RuleAction
+	aux := &struct {
+		Type string `json:"type"`
+		*Alias
+	}{
+		Alias: (*Alias)(r),
+	}
+
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	switch aux.Type {
+	case "RULE_ACTION_TYPE_REWARD_POINT":
+		r.Type = rulev1.RuleActionType_RULE_ACTION_TYPE_REWARD_POINT
+	case "RULE_ACTION_TYPE_VOUCHER":
+		r.Type = rulev1.RuleActionType_RULE_ACTION_TYPE_VOUCHER
+	case "RULE_ACTION_TYPE_CASHBACK":
+		r.Type = rulev1.RuleActionType_RULE_ACTION_TYPE_CASHBACK
+	case "RULE_ACTION_TYPE_NOTIFY":
+		r.Type = rulev1.RuleActionType_RULE_ACTION_TYPE_NOTIFY
+	case "RULE_ACTION_TYPE_TAG":
+		r.Type = rulev1.RuleActionType_RULE_ACTION_TYPE_TAG
+	default:
+		r.Type = rulev1.RuleActionType_RULE_ACTION_TYPE_UNSPECIFIED
+	}
+
+	return nil
+}
+
+// PointAction mirrors rulev1.PointAction for JSON storage.
+type PointAction struct {
+	Points    int64             `json:"points"`
+	Reference string            `json:"reference,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
+}
+
+// VoucherAction mirrors rulev1.VoucherAction for JSON storage.
+type VoucherAction struct {
+	VoucherCode   string            `json:"voucher_code"`
+	DiscountValue float64           `json:"discount_value"`
+	DiscountType  string            `json:"discount_type"`
+	ExpiryDate    *time.Time        `json:"expiry_date,omitempty"`
+	Metadata      map[string]string `json:"metadata,omitempty"`
+}
+
+// CashbackAction mirrors rulev1.CashbackAction for JSON storage.
+type CashbackAction struct {
+	Amount         float64           `json:"amount"`
+	Currency       string            `json:"currency,omitempty"`
+	TargetWalletID string            `json:"target_wallet_id,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+}
+
+// NotifyAction mirrors rulev1.NotifyAction for JSON storage.
+type NotifyAction struct {
+	Channel    string            `json:"channel,omitempty"`
+	TemplateID string            `json:"template_id,omitempty"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+}
+
+// TagAction mirrors rulev1.TagAction for JSON storage.
+type TagAction struct {
+	TagKey   string `json:"tag_key,omitempty"`
+	TagValue string `json:"tag_value,omitempty"`
 }
 
 // ModelActionsFromProto converts protobuf actions into JSON friendly structures.

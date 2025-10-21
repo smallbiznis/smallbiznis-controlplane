@@ -135,6 +135,7 @@ func (s *Service) RunExpiryJob(ctx context.Context, tenantID string) error {
 		"completed_at": time.Now(),
 	})
 	zap.L().Info("expiry job finished", zap.String("tenant_id", tenantID))
+
 	return nil
 }
 

@@ -5,9 +5,11 @@ const (
 	TenantProvisioningLoyalty = "tenant:provisioning:loyalty"
 
 	// Transaction task
-	TransactionCompleted = "transaction:completed"
+	TransactionCreated  = "transaction:created"
+	TransactionRefunded = "transaction:refunded"
 
 	// Loyalty tasks
+	LoyaltyEarning    = "loyalty:earning"
 	LoyaltyExpiryRun  = "loyalty:expiry:run"
 	LoyaltySyncLedger = "loyalty:sync:ledger"
 

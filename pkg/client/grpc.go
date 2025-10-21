@@ -9,6 +9,7 @@ import (
 	tenantv1 "github.com/smallbiznis/go-genproto/smallbiznis/controlplane/tenant/v1"
 	ledgerv1 "github.com/smallbiznis/go-genproto/smallbiznis/ledger/v1"
 	loyaltyv1 "github.com/smallbiznis/go-genproto/smallbiznis/loyalty/v1"
+	rulev1 "github.com/smallbiznis/go-genproto/smallbiznis/rule/v1"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -90,6 +91,15 @@ func NewLedgerClient(lc fx.Lifecycle, cfg *config.Config) (ledgerv1.LedgerServic
 		return nil, err
 	}
 	return ledgerv1.NewLedgerServiceClient(conn), nil
+}
+
+func NewRuleClient(lc fx.Lifecycle, cfg *config.Config) (rulev1.RuleServiceClient, error) {
+	conn, err := newClient(lc, "rule:4317")
+	if err != nil {
+		zap.L().Error("failed to connected rule", zap.Error(err), zap.String("url", "rule:4317"))
+		return nil, err
+	}
+	return rulev1.NewRuleServiceClient(conn), nil
 }
 
 func NewLoyaltyClient(lc fx.Lifecycle, cfg *config.Config) (loyaltyv1.PointServiceClient, error) {

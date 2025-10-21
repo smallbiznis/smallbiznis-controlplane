@@ -12,12 +12,10 @@ import (
 	health "google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/bwmarrin/snowflake"
-	"github.com/gogo/status"
 	ledgerv1 "github.com/smallbiznis/go-genproto/smallbiznis/ledger/v1"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
@@ -50,24 +48,6 @@ func NewService(p ServiceParams) *Service {
 		balance: repository.ProvideStore[Balance](p.DB),
 		credit:  repository.ProvideStore[CreditPool](p.DB),
 	}
-}
-
-func (s *Service) Check(ctx context.Context, req *health.HealthCheckRequest) (*health.HealthCheckResponse, error) {
-	// You can optionally check database connectivity here:
-	sqlDB, err := s.db.DB()
-	if err != nil {
-		return nil, status.Error(codes.Internal, "db not ready")
-	}
-	if err := sqlDB.PingContext(ctx); err != nil {
-		return &health.HealthCheckResponse{Status: health.HealthCheckResponse_NOT_SERVING}, nil
-	}
-
-	return &health.HealthCheckResponse{Status: health.HealthCheckResponse_SERVING}, nil
-}
-
-func (s *Service) Watch(req *health.HealthCheckRequest, srv health.Health_WatchServer) error {
-	// Optional: implement streaming health status (rarely used)
-	return status.Error(codes.Unimplemented, "Watch method not implemented")
 }
 
 func (s *Service) GetBalance(ctx context.Context, req *ledgerv1.GetBalanceRequest) (*ledgerv1.GetBalanceResponse, error) {

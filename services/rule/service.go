@@ -15,6 +15,7 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -30,7 +31,9 @@ const (
 // Service implements rulev1.RuleServiceServer.
 type Service struct {
 	rulev1.UnimplementedRuleServiceServer
+	grpc_health_v1.UnimplementedHealthServer
 
+	db     *gorm.DB
 	repo   Repository
 	logger *zap.Logger
 	node   *snowflake.Node
@@ -40,6 +43,7 @@ type Service struct {
 type ServiceParams struct {
 	fx.In
 
+	DB         *gorm.DB
 	Repository Repository
 	Logger     *zap.Logger
 	Node       *snowflake.Node
@@ -57,6 +61,7 @@ func NewService(p ServiceParams) *Service {
 	}
 
 	return &Service{
+		db:     p.DB,
 		repo:   p.Repository,
 		logger: logger,
 		node:   p.Node,
@@ -360,11 +365,28 @@ func (s *Service) BatchEvaluate(ctx context.Context, req *rulev1.BatchEvaluateRe
 
 	ctxMap := structToMap(req.GetContext())
 
+	if len(req.RuleIds) == 0 {
+		rs, err := s.repo.List(ctx, req.GetTenantId(), ListParams{
+			IncludeInactive: false,
+		})
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to get active rules")
+		}
+
+		for _, v := range rs {
+			req.RuleIds = append(req.RuleIds, v.RuleID)
+		}
+	}
+
+	zap.L().Info("Total RuleIds", zap.Strings("rule_ids", req.GetRuleIds()))
+
 	results, evalErr := s.evaluateRulesBatch(ctx, tenantID, req.GetRuleIds(), ctxMap)
 	if evalErr != nil {
 		s.logger.Error("batch evaluation failed", zap.Error(evalErr))
 		return nil, status.Error(codes.Internal, "failed to evaluate rules")
 	}
+
+	zap.L().Debug("Results", zap.Any("results", results))
 
 	var totalMatched int32
 	for _, res := range results {
@@ -467,7 +489,7 @@ func (s *Service) evaluateRuleResult(rule *Rule, ctxMap map[string]any) *rulev1.
 
 	matched, actionValue, err := s.executeRule(rule, ctxMap)
 	if err != nil {
-		s.logger.Error("rule evaluation failed", zap.String("rule_id", rule.RuleID), zap.Error(err))
+		s.logger.Error("rule evaluation failed", zap.String("rule_id", rule.RuleID), zap.String("rule_name", rule.Name), zap.Error(err))
 		result.Status = rulev1.EvaluationStatus_EVALUATION_STATUS_ERROR
 		result.ErrorMessage = "failed to evaluate rule"
 		return result
@@ -515,107 +537,93 @@ func buildActionSummary(actions []RuleAction) (*structpb.Struct, error) {
 		return nil, nil
 	}
 
-	var totalPoints int64
-	var totalCashback float64
-	var totalVoucherDiscount float64
+	var (
+		totalPoints          int64
+		totalCashback        float64
+		totalVoucherDiscount float64
 
-	vouchers := make([]any, 0)
-	notifications := make([]any, 0)
-	tags := make(map[string]string)
-	metadata := make(map[string]string)
-	actionEntries := make([]any, 0, len(actions))
+		vouchers      []any
+		notifications []any
+		tags          = make(map[string]string)
+		metadata      = make(map[string]string)
+		actionEntries = make([]any, 0, len(actions))
+	)
 
 	for _, action := range actions {
-		entry := map[string]any{
-			"type": action.Type.String(),
-		}
+		entry := map[string]any{"type": action.Type.String()}
 
 		switch action.Type {
 		case rulev1.RuleActionType_RULE_ACTION_TYPE_REWARD_POINT:
-			if payload := action.PointAction; payload != nil {
-				entry["points"] = payload.Points
-				if payload.Reference != "" {
-					entry["reference"] = payload.Reference
-				}
-				if len(payload.Metadata) > 0 {
-					entry["metadata"] = stringMapToAny(payload.Metadata)
-					metadata = mergeStringMaps(metadata, payload.Metadata)
-				}
-				totalPoints += payload.Points
+			if p := action.PointAction; p != nil {
+				entry["points"] = p.Points
+				entry["reference"] = p.Reference
+				entry["metadata"] = stringMapToAny(p.Metadata)
+				metadata = mergeStringMaps(metadata, p.Metadata)
+				totalPoints += p.Points
 			}
+
 		case rulev1.RuleActionType_RULE_ACTION_TYPE_VOUCHER:
-			if payload := action.VoucherAction; payload != nil {
+			if v := action.VoucherAction; v != nil {
 				detail := map[string]any{
-					"voucher_code":   payload.VoucherCode,
-					"discount_value": payload.DiscountValue,
-					"discount_type":  payload.DiscountType,
+					"voucher_code":   v.VoucherCode,
+					"discount_value": v.DiscountValue,
+					"discount_type":  v.DiscountType,
 				}
-				if payload.ExpiryDate != nil {
-					detail["expiry_date"] = payload.ExpiryDate.UTC().Format(time.RFC3339)
+				if v.ExpiryDate != nil {
+					detail["expiry_date"] = v.ExpiryDate.UTC().Format(time.RFC3339)
 				}
-				if len(payload.Metadata) > 0 {
-					detail["metadata"] = stringMapToAny(payload.Metadata)
-					metadata = mergeStringMaps(metadata, payload.Metadata)
-				}
+				detail["metadata"] = stringMapToAny(v.Metadata)
+				metadata = mergeStringMaps(metadata, v.Metadata)
 				vouchers = append(vouchers, detail)
 				entry["voucher"] = detail
-				totalVoucherDiscount += payload.DiscountValue
+				totalVoucherDiscount += v.DiscountValue
 			}
+
 		case rulev1.RuleActionType_RULE_ACTION_TYPE_CASHBACK:
-			if payload := action.CashbackAction; payload != nil {
+			if c := action.CashbackAction; c != nil {
 				detail := map[string]any{
-					"amount": payload.Amount,
+					"amount":   c.Amount,
+					"currency": c.Currency,
 				}
-				if payload.Currency != "" {
-					detail["currency"] = payload.Currency
+				if c.TargetWalletID != "" {
+					detail["target_wallet_id"] = c.TargetWalletID
 				}
-				if payload.TargetWalletID != "" {
-					detail["target_wallet_id"] = payload.TargetWalletID
-				}
-				if len(payload.Metadata) > 0 {
-					detail["metadata"] = stringMapToAny(payload.Metadata)
-					metadata = mergeStringMaps(metadata, payload.Metadata)
-				}
-				totalCashback += payload.Amount
+				detail["metadata"] = stringMapToAny(c.Metadata)
+				metadata = mergeStringMaps(metadata, c.Metadata)
+				totalCashback += c.Amount
 				entry["cashback"] = detail
 			}
+
 		case rulev1.RuleActionType_RULE_ACTION_TYPE_NOTIFY:
-			if payload := action.NotifyAction; payload != nil {
-				detail := map[string]any{}
-				if payload.Channel != "" {
-					detail["channel"] = payload.Channel
+			if n := action.NotifyAction; n != nil {
+				detail := map[string]any{
+					"channel":     n.Channel,
+					"template_id": n.TemplateID,
+					"metadata":    stringMapToAny(n.Metadata),
 				}
-				if payload.TemplateID != "" {
-					detail["template_id"] = payload.TemplateID
-				}
-				if len(payload.Metadata) > 0 {
-					detail["metadata"] = stringMapToAny(payload.Metadata)
-					metadata = mergeStringMaps(metadata, payload.Metadata)
-				}
-				entry["notification"] = detail
+				metadata = mergeStringMaps(metadata, n.Metadata)
 				notifications = append(notifications, detail)
+				entry["notification"] = detail
 			}
+
 		case rulev1.RuleActionType_RULE_ACTION_TYPE_TAG:
-			if payload := action.TagAction; payload != nil {
-				tag := map[string]any{
-					"tag_key":   payload.TagKey,
-					"tag_value": payload.TagValue,
-				}
+			if t := action.TagAction; t != nil {
+				tag := map[string]any{"tag_key": t.TagKey, "tag_value": t.TagValue}
 				entry["tag"] = tag
-				if payload.TagKey != "" {
-					tags[payload.TagKey] = payload.TagValue
+				if t.TagKey != "" {
+					tags[t.TagKey] = t.TagValue
 				}
-			}
-		default:
-			if payload := action.PointAction; payload != nil && len(payload.Metadata) > 0 {
-				metadata = mergeStringMaps(metadata, payload.Metadata)
 			}
 		}
 
 		actionEntries = append(actionEntries, entry)
 	}
 
-	summary := make(map[string]any)
+	summary := map[string]any{
+		"actions":       actionEntries,
+		"actions_count": len(actionEntries),
+		"generated_at":  time.Now().UTC().Format(time.RFC3339),
+	}
 
 	if totalPoints != 0 {
 		summary["total_reward_points"] = totalPoints
@@ -638,16 +646,13 @@ func buildActionSummary(actions []RuleAction) (*structpb.Struct, error) {
 	if len(metadata) > 0 {
 		summary["metadata"] = stringMapToAny(metadata)
 	}
-	if len(actionEntries) > 0 {
-		summary["actions"] = actionEntries
-	}
-	summary["actions_count"] = int64(len(actionEntries))
 
-	if len(actionEntries) == 0 && len(summary) == 1 {
-		return nil, nil
+	pbSummary, err := structpb.NewStruct(summary)
+	if err != nil {
+		return nil, err
 	}
 
-	return structpb.NewStruct(summary)
+	return pbSummary, nil
 }
 
 func stringMapToAny(src map[string]string) map[string]any {
