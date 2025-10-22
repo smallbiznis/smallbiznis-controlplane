@@ -1,24 +1,66 @@
 package voucher
 
 import (
-	"fmt"
 	"time"
 
-	"github.com/bwmarrin/snowflake"
 	voucherv1 "github.com/smallbiznis/go-genproto/smallbiznis/voucher/v1"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"gorm.io/datatypes"
 )
 
+type DiscountType string
+
+const (
+	DiscountTypeFixed   DiscountType = "FIXED"
+	DiscountTypePercent DiscountType = "PERCENT"
+	DiscountTypeCustom  DiscountType = "CUSTOM"
+)
+
+type Voucher struct {
+	VoucherID     string       `gorm:"column:voucher_id;primaryKey"` // Snowflake string ID
+	TenantID      string       `gorm:"column:tenant_id;index;not null"`
+	CampaignID    string       `gorm:"column:campaign_id;index"`
+	Code          string       `gorm:"column:code;uniqueIndex;not null"`
+	Name          string       `gorm:"column:name;not null"`
+	DiscountType  DiscountType `gorm:"column:discount_type;not null"` // fixed, percent, free_item, etc.
+	DiscountValue float64      `gorm:"column:discount_value;not null;default:0"`
+	CurrencyCode  string       `gorm:"column:currency_code;default:'IDR'"`
+	ExpiryDate    *time.Time   `gorm:"column:expiry_date"`
+	NeverExpires  bool         `gorm:"column:never_expires;default:false"`
+	IsActive      bool         `gorm:"column:is_active;default:true"`
+	CreatedAt     time.Time    `gorm:"column:created_at;autoCreateTime"`
+	UpdatedAt     time.Time    `gorm:"column:updated_at;autoUpdateTime"`
+
+	// Relations
+	Issuances []VoucherIssuance `gorm:"foreignKey:VoucherID;constraint:OnDelete:CASCADE"`
+}
+
+func (v *Voucher) ToProto() *voucherv1.Voucher {
+	return &voucherv1.Voucher{
+		VoucherId:     v.VoucherID,
+		TenantId:      v.TenantID,
+		CampaignId:    v.CampaignID,
+		VoucherCode:   v.Code,
+		VoucherName:   v.Name,
+		DiscountType:  voucherv1.DiscountType(voucherv1.DiscountType_value[string(v.DiscountType)]),
+		DiscountValue: v.DiscountValue,
+		CurrencyCode:  v.CurrencyCode,
+		ExpiryDate:    timestamppb.New(*v.ExpiryDate),
+		IsActive:      v.IsActive,
+		CreatedAt:     timestamppb.New(v.CreatedAt),
+		UpdatedAt:     timestamppb.New(v.UpdatedAt),
+	}
+}
+
 type VoucherIssueStatus string
 
 // 'issued', 'redeemed', 'expired', 'canceled'
 var (
-	Issued   VoucherIssueStatus = "issued"
-	Redeemed VoucherIssueStatus = "redeemed"
-	Expired  VoucherIssueStatus = "expired"
-	Canceled VoucherIssueStatus = "cancelled"
+	Issued   VoucherIssueStatus = "ISSUED"
+	Redeemed VoucherIssueStatus = "REDEEMED"
+	Expired  VoucherIssueStatus = "EXPIRED"
+	Canceled VoucherIssueStatus = "CANCELLED"
 )
 
 func (s VoucherIssueStatus) String() string {
@@ -27,100 +69,6 @@ func (s VoucherIssueStatus) String() string {
 		return string(s)
 	default:
 		return ""
-	}
-}
-
-// VoucherCampaign represents a promotional campaign (top-level container).
-type VoucherCampaign struct {
-	CampaignID     snowflake.ID           `gorm:"column:campaign_id;primaryKey;autoIncrement"`
-	TenantID       snowflake.ID           `gorm:"column:tenant_id;index;not null"`
-	Name           string                 `gorm:"column:name;not null"`
-	Code           string                 `gorm:"column:code"`
-	Description    string                 `gorm:"column:description"`
-	Type           voucherv1.CampaignType `gorm:"column:type;not null"`
-	TotalStock     int32                  `gorm:"column:total_stock;not null;default:0"`
-	RemainingStock int32                  `gorm:"column:remaining_stock;not null;default:0"`
-	IsActive       bool                   `gorm:"column:is_active;default:true"`
-	StartAt        *time.Time             `gorm:"column:start_at"`
-	EndAt          *time.Time             `gorm:"column:end_at"`
-	DslExpression  datatypes.JSON         `gorm:"column:dsl_expression;type:text"` // CEL rule for eligibility
-	Metadata       datatypes.JSON         `gorm:"column:metadata;type:jsonb"`
-	CreatedAt      time.Time              `gorm:"column:created_at;autoCreateTime"`
-	UpdatedAt      time.Time              `gorm:"column:updated_at;autoUpdateTime"`
-
-	// Relations
-	Vouchers []Voucher `gorm:"foreignKey:CampaignID;constraint:OnDelete:CASCADE"`
-}
-
-func (m *VoucherCampaign) ToProto() *voucherv1.VoucherCampaign {
-
-	vouchers := make([]*voucherv1.Voucher, 0)
-	if len(m.Vouchers) > 0 {
-		for _, v := range m.Vouchers {
-			vouchers = append(vouchers, v.ToProto())
-		}
-	}
-
-	var metadataStruct *structpb.Struct
-	if m.Metadata != nil {
-		metadataStruct, _ = structpb.NewStruct(map[string]interface{}{})
-		_ = metadataStruct.UnmarshalJSON(m.Metadata)
-	}
-
-	return &voucherv1.VoucherCampaign{
-		CampaignId:     m.CampaignID.String(),
-		TenantId:       m.TenantID.String(),
-		Name:           m.Name,
-		Code:           m.Code,
-		Description:    m.Description,
-		Type:           m.Type,
-		TotalStock:     m.TotalStock,
-		RemainingStock: m.RemainingStock,
-		IsActive:       m.IsActive,
-		StartAt:        timestamppb.New(*m.StartAt),
-		EndAt:          timestamppb.New(*m.EndAt),
-		Metadata:       metadataStruct,
-	}
-}
-
-type Voucher struct {
-	VoucherID      string                 `gorm:"column:voucher_id;primaryKey"` // Snowflake string ID
-	TenantID       string                 `gorm:"column:tenant_id;index;not null"`
-	CampaignID     string                 `gorm:"column:campaign_id;index"`
-	Code           string                 `gorm:"column:code;uniqueIndex;not null"`
-	Name           string                 `gorm:"column:name;not null"`
-	DiscountType   voucherv1.DiscountType `gorm:"column:discount_type;not null"` // fixed, percent, free_item, etc.
-	DiscountValue  float64                `gorm:"column:discount_value;not null;default:0"`
-	Currency       string                 `gorm:"column:currency;default:'IDR'"`
-	Stock          int32                  `gorm:"column:stock;not null;default:0"`
-	RemainingStock int32                  `gorm:"column:remaining_stock;not null;default:0"`
-	ExpiryDate     *time.Time             `gorm:"column:expiry_date"`
-	IsActive       bool                   `gorm:"column:is_active;default:true"`
-	CreatedAt      time.Time              `gorm:"column:created_at;autoCreateTime"`
-	UpdatedAt      time.Time              `gorm:"column:updated_at;autoUpdateTime"`
-
-	// Relations
-	Campaign   *VoucherCampaign  `gorm:"foreignKey:CampaignID;references:CampaignID;constraint:OnDelete:SET NULL"`
-	Issuances  []VoucherIssuance `gorm:"foreignKey:VoucherID;constraint:OnDelete:CASCADE"`
-	VoucherEvt []VoucherEvent    `gorm:"foreignKey:VoucherID;constraint:OnDelete:CASCADE"`
-}
-
-func (v *Voucher) ToProto() *voucherv1.Voucher {
-	return &voucherv1.Voucher{
-		VoucherId:      v.VoucherID,
-		TenantId:       v.TenantID,
-		CampaignId:     fmt.Sprint(v.CampaignID),
-		Code:           v.Code,
-		Name:           v.Name,
-		DiscountType:   v.DiscountType,
-		DiscountValue:  v.DiscountValue,
-		Currency:       v.Currency,
-		Stock:          int32(v.Stock),
-		RemainingStock: int32(v.RemainingStock),
-		ExpiryDate:     timestamppb.New(*v.ExpiryDate),
-		IsActive:       v.IsActive,
-		CreatedAt:      timestamppb.New(v.CreatedAt),
-		UpdatedAt:      timestamppb.New(v.UpdatedAt),
 	}
 }
 
@@ -162,16 +110,4 @@ func (v *VoucherIssuance) ToProto() *voucherv1.VoucherIssuance {
 		CreatedAt:  timestamppb.New(v.CreatedAt),
 		UpdatedAt:  timestamppb.New(v.UpdatedAt),
 	}
-}
-
-// VoucherEvent stores audit logs of voucher lifecycle.
-type VoucherEvent struct {
-	EventID    int64                  `gorm:"column:event_id;primaryKey;autoIncrement"`
-	TenantID   string                 `gorm:"column:tenant_id;index;not null"`
-	VoucherID  int64                  `gorm:"column:voucher_id;index"`
-	IssuanceID *int64                 `gorm:"column:issuance_id"`
-	UserID     *string                `gorm:"column:user_id"`
-	EventType  string                 `gorm:"column:event_type;not null"` // issued, redeemed, expired, restocked
-	Payload    map[string]interface{} `gorm:"column:payload;type:jsonb"`
-	CreatedAt  time.Time              `gorm:"column:created_at;autoCreateTime"`
 }

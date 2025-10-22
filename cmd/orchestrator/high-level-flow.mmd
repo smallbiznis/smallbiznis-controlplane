@@ -1,0 +1,29 @@
+sequenceDiagram
+    autonumber
+    participant POS as 🧾 POS / API Event
+    participant Orchestrator as 🧭 Orchestrator Service
+    participant Rule as 🧠 Rule Engine
+    participant Campaign as 🎁 Campaign Service
+    participant Loyalty as 💰 Loyalty Service
+    participant Voucher as 🎟️ Voucher Service
+    participant Order as 📦 Order Service
+    participant Ledger as 📘 Ledger / Audit Log
+
+    POS->>Orchestrator: EarningEvent {total_spent=150000, user_id, tenant_id}
+    Orchestrator->>Rule: BatchEvaluate(Context)
+    Rule-->>Orchestrator: Matched → [campaign_id="CAMP-123"]
+    Orchestrator->>Campaign: GetCampaign(CAMP-123)
+    Campaign-->>Orchestrator: {reward_type=POINT/VOUCHER/FREE_ITEM, reward_value={...}}
+
+    alt reward_type == POINT
+        Orchestrator->>Loyalty: AddPoints(user_id, reward_value.points)
+        Loyalty-->>Ledger: AddEntry(CREDIT, reward_value.points)
+    else reward_type == VOUCHER
+        Orchestrator->>Voucher: IssueVoucher(user_id, reward_value.campaign_id)
+        Voucher-->>Ledger: Log issuance
+    else reward_type == FREE_ITEM
+        Orchestrator->>Order: AddRewardItem(user_id, reward_value.product_id)
+        Order-->>Ledger: Record reward item
+    end
+
+    Orchestrator-->>POS: ✅ Success (campaigns executed)

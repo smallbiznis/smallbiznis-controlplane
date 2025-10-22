@@ -19,6 +19,7 @@ import (
 	"smallbiznis-controlplane/pkg/db"
 	"smallbiznis-controlplane/pkg/httpapi"
 	"smallbiznis-controlplane/pkg/logger"
+	"smallbiznis-controlplane/pkg/redis"
 	"smallbiznis-controlplane/pkg/sequence"
 	"smallbiznis-controlplane/pkg/server"
 	"smallbiznis-controlplane/services/loyalty"
@@ -29,7 +30,7 @@ func main() {
 		config.Module,
 		logger.Module,
 		db.Module,
-		// redis.Module,
+		redis.Module,
 		sequence.Module,
 		fx.Provide(
 			server.RegisterServerMux,
@@ -38,13 +39,7 @@ func main() {
 		),
 		fx.Provide(
 			provideSnowflakeNode,
-			registerServerMux,
-			registerAsynqServer,
 			registerClient,
-		),
-		fx.Invoke(
-			registerHandlers,
-			runServerMux,
 		),
 		fx.Provide(
 			client.NewRuleClient,
@@ -107,51 +102,4 @@ func registerClient(lc fx.Lifecycle, cfg *config.Config) *asynq.Client {
 	})
 
 	return client
-}
-
-func registerServerMux() *asynq.ServeMux {
-	return asynq.NewServeMux()
-}
-
-func registerAsynqServer(cfg *config.Config) *asynq.Server {
-	return asynq.NewServer(
-		asynq.RedisClientOpt{
-			Addr:     cfg.Redis.Addr,
-			Password: cfg.Redis.Password,
-			DB:       cfg.Redis.DB,
-		},
-		asynq.Config{
-			Concurrency:    10,
-			RetryDelayFunc: asynq.DefaultRetryDelayFunc,
-			Queues: map[string]int{
-				"loyalty": 10,
-			},
-			ErrorHandler: asynq.ErrorHandlerFunc(func(ctx context.Context, task *asynq.Task, err error) {
-				zap.L().Error("asynq task permanently failed", zap.String("task_type", task.Type()), zap.Error(err))
-			}),
-		},
-	)
-}
-
-func runServerMux(lc fx.Lifecycle, server *asynq.Server, mux *asynq.ServeMux) {
-	lc.Append(fx.Hook{
-		OnStart: func(ctx context.Context) error {
-			go func() {
-				if err := server.Start(mux); err != nil {
-					zap.L().Error("[Asynq] Failed to start Asynq server", zap.Error(err))
-					os.Exit(1)
-				}
-			}()
-			zap.L().Info("[Asynq] Asynq server started")
-			return nil
-		},
-		OnStop: func(ctx context.Context) error {
-			server.Stop()
-			return nil
-		},
-	})
-}
-
-func registerHandlers(lc fx.Lifecycle, mux *asynq.ServeMux, svc *loyalty.Task) {
-	mux.HandleFunc(loyalty.LoyaltyProcessEarning, svc.HandleProcessEarningTask)
 }

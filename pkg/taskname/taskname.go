@@ -1,4 +1,4 @@
-package taskname
+package orchestratorname
 
 const (
 	// Tenant task

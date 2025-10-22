@@ -11,15 +11,12 @@ import (
 	"smallbiznis-controlplane/pkg/repository"
 	"smallbiznis-controlplane/pkg/security"
 	"smallbiznis-controlplane/pkg/sequence"
-	"smallbiznis-controlplane/pkg/task"
-	"smallbiznis-controlplane/pkg/taskname"
 	"smallbiznis-controlplane/services/apikey"
 	"smallbiznis-controlplane/services/domain"
 	"time"
 
 	"github.com/bwmarrin/snowflake"
 	"github.com/gosimple/slug"
-	"github.com/hibiken/asynq"
 	"github.com/redis/go-redis/v9"
 	tenantv1 "github.com/smallbiznis/go-genproto/smallbiznis/controlplane/tenant/v1"
 	"go.opentelemetry.io/otel/trace"
@@ -38,7 +35,6 @@ type Service struct {
 	config *config.Config
 	db     *gorm.DB
 	rdb    *redis.Client
-	asynq  task.Enqueuer
 	node   *snowflake.Node
 	seq    sequence.Generator
 
@@ -50,7 +46,6 @@ type ServiceParams struct {
 	Config *config.Config
 	DB     *gorm.DB
 	Redis  *redis.Client
-	Asynq  task.Enqueuer
 	Node   *snowflake.Node
 	Seq    sequence.Generator
 }
@@ -59,7 +54,6 @@ func NewService(p ServiceParams) *Service {
 	return &Service{
 		db:     p.DB,
 		rdb:    p.Redis,
-		asynq:  p.Asynq,
 		node:   p.Node,
 		seq:    p.Seq,
 		config: p.Config,
@@ -234,26 +228,6 @@ func (s *Service) CreateTenant(ctx context.Context, req *tenantv1.CreateTenantRe
 		if err := s.cacheTenant(ctx, tenant, domain); err != nil {
 			zapLog.Error("failed to cache tenant", zap.Error(err))
 			return err
-		}
-
-		// Create Job Provisioning
-		payload := map[string]interface{}{
-			"tenant_id":   tenantID,
-			"tenant_slug": slugName,
-			"tenant_code": tenantCode,
-			"domain":      defaultHostName,
-		}
-		payloadBytes, _ := json.Marshal(payload)
-
-		tasks := []*asynq.Task{
-			asynq.NewTask(taskname.TenantProvisioningLoyalty, payloadBytes),
-		}
-
-		for _, task := range tasks {
-			if _, err := s.asynq.Enqueue(task, asynq.Queue("critical")); err != nil {
-				zapLog.Error("failed enqueue provisioning task", zap.String("task_type", task.Type()), zap.Error(err))
-				return fmt.Errorf("failed to enqueue provisioning task: %w", err)
-			}
 		}
 
 		return nil

@@ -2,9 +2,6 @@ package voucher
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"smallbiznis-controlplane/pkg/celengine"
 	"smallbiznis-controlplane/pkg/db/option"
 	"smallbiznis-controlplane/pkg/db/pagination"
 	"smallbiznis-controlplane/pkg/repository"
@@ -29,9 +26,7 @@ type Service struct {
 	db           *gorm.DB
 	node         *snowflake.Node
 	seq          sequence.Generator
-	campaign     repository.Repository[VoucherCampaign]
 	voucher      repository.Repository[Voucher]
-	voucherEvent repository.Repository[VoucherEvent]
 	voucherIssue repository.Repository[VoucherIssuance]
 }
 
@@ -44,32 +39,13 @@ type ServiceParams struct {
 
 func NewService(p ServiceParams) *Service {
 	return &Service{
-		db:           p.DB,
-		node:         p.Node,
-		seq:          p.Seq,
-		campaign:     repository.ProvideStore[VoucherCampaign](p.DB),
+		db:   p.DB,
+		node: p.Node,
+		seq:  p.Seq,
+
 		voucher:      repository.ProvideStore[Voucher](p.DB),
-		voucherEvent: repository.ProvideStore[VoucherEvent](p.DB),
 		voucherIssue: repository.ProvideStore[VoucherIssuance](p.DB),
 	}
-}
-
-func (s *Service) Check(ctx context.Context, req *grpc_health_v1.HealthCheckRequest) (*grpc_health_v1.HealthCheckResponse, error) {
-	// You can optionally check database connectivity here:
-	sqlDB, err := s.db.DB()
-	if err != nil {
-		return nil, status.Error(codes.Internal, "db not ready")
-	}
-	if err := sqlDB.PingContext(ctx); err != nil {
-		return &grpc_health_v1.HealthCheckResponse{Status: grpc_health_v1.HealthCheckResponse_NOT_SERVING}, nil
-	}
-
-	return &grpc_health_v1.HealthCheckResponse{Status: grpc_health_v1.HealthCheckResponse_SERVING}, nil
-}
-
-func (s *Service) Watch(req *grpc_health_v1.HealthCheckRequest, srv grpc_health_v1.Health_WatchServer) error {
-	// Optional: implement streaming health status (rarely used)
-	return status.Error(codes.Unimplemented, "Watch method not implemented")
 }
 
 func (s *Service) CreateVoucher(ctx context.Context, req *voucherv1.CreateVoucherRequest) (*voucherv1.Voucher, error) {
@@ -88,17 +64,21 @@ func (s *Service) CreateVoucher(ctx context.Context, req *voucherv1.CreateVouche
 
 	voucher := req.Voucher
 	v := Voucher{
-		VoucherID:      s.node.Generate().String(),
-		TenantID:       req.GetTenantId(),
-		CampaignID:     voucher.GetCampaignId(),
-		Code:           voucher.GetCode(),
-		Name:           voucher.GetName(),
-		DiscountType:   voucher.GetDiscountType(),
-		DiscountValue:  voucher.GetDiscountValue(),
-		Currency:       voucher.GetCurrency(),
-		Stock:          int32(voucher.GetStock()),
-		RemainingStock: int32(voucher.GetRemainingStock()),
-		IsActive:       voucher.GetIsActive(),
+		VoucherID:     s.node.Generate().String(),
+		TenantID:      req.GetTenantId(),
+		CampaignID:    voucher.GetCampaignId(),
+		Code:          voucher.GetVoucherCode(),
+		Name:          voucher.GetVoucherName(),
+		DiscountType:  DiscountType(voucher.GetDiscountType().String()),
+		DiscountValue: voucher.GetDiscountValue(),
+		CurrencyCode:  voucher.GetCurrencyCode(),
+		NeverExpires:  voucher.GetNeverExpires(),
+		IsActive:      voucher.GetIsActive(),
+	}
+
+	if t := voucher.GetExpiryDate(); t != nil {
+		expDate := t.AsTime()
+		v.ExpiryDate = &expDate
 	}
 
 	if err := s.voucher.Create(ctx, &v); err != nil {
@@ -229,6 +209,7 @@ func (s *Service) EvaluateVouchers(ctx context.Context, req *voucherv1.EvaluateV
 		Where("tenant_id = ? AND is_active = TRUE AND (expiry_date IS NULL OR expiry_date > ?)",
 			req.TenantId, time.Now()).
 		Find(&vouchers).Error; err != nil {
+		zapLog.Error("failed get voucher", zap.Error(err))
 		return nil, err
 	}
 
@@ -237,96 +218,110 @@ func (s *Service) EvaluateVouchers(ctx context.Context, req *voucherv1.EvaluateV
 		attrs[k] = v
 	}
 
-	env, err := celengine.BuildCelEnvFromAttributes(attrs)
-	if err != nil {
-		zapLog.Error("failed to build CEL environment", zap.Error(err))
-		return nil, err
-	}
+	// env, err := celengine.BuildCelEnvFromAttributes(attrs)
+	// if err != nil {
+	// 	zapLog.Error("failed to build CEL environment", zap.Error(err))
+	// 	return nil, err
+	// }
 
 	results := make([]*voucherv1.VoucherEligibilityResult, 0, len(vouchers))
-	for _, v := range vouchers {
-		expr := v.Campaign.DslExpression.String()
-		if expr == "" || expr == "{}" {
-			results = append(results, &voucherv1.VoucherEligibilityResult{
-				VoucherCode: v.Code,
-				Eligible:    true, // no rule = always eligible
-				Reason:      "no dsl_expression defined",
-			})
-			continue
-		}
+	// for _, v := range vouchers {
+	// 	expr := v.Campaign.DslExpression.String()
+	// 	if expr == "" || expr == "{}" {
+	// 		results = append(results, &voucherv1.VoucherEligibilityResult{
+	// 			VoucherCode: v.Code,
+	// 			Eligible:    true, // no rule = always eligible
+	// 			Reason:      "no dsl_expression defined",
+	// 		})
+	// 		continue
+	// 	}
 
-		var expStr string
-		if json.Valid([]byte(expr)) {
-			_ = json.Unmarshal([]byte(expr), &expStr)
-			if expStr == "" {
-				expStr = expr
-			}
-		} else {
-			expStr = expr
-		}
+	// 	var expStr string
+	// 	if json.Valid([]byte(expr)) {
+	// 		_ = json.Unmarshal([]byte(expr), &expStr)
+	// 		if expStr == "" {
+	// 			expStr = expr
+	// 		}
+	// 	} else {
+	// 		expStr = expr
+	// 	}
 
-		ok, err := celengine.Evaluate(env, expStr, attrs)
-		res := &voucherv1.VoucherEligibilityResult{
-			VoucherCode: v.Code,
-			Eligible:    ok,
-		}
+	// 	ok, err := celengine.Evaluate(env, expStr, attrs)
+	// 	res := &voucherv1.VoucherEligibilityResult{
+	// 		VoucherCode: v.Code,
+	// 		Eligible:    ok,
+	// 	}
 
-		if err != nil {
-			zapLog.Warn("failed to evaluate CEL", zap.String("voucher_code", v.Code), zap.Error(err))
-			res.Reason = err.Error()
-		} else if !ok {
-			res.Reason = "condition not met"
-		}
+	// 	if err != nil {
+	// 		zapLog.Warn("failed to evaluate CEL", zap.String("voucher_code", v.Code), zap.Error(err))
+	// 		res.Reason = err.Error()
+	// 	} else if !ok {
+	// 		res.Reason = "condition not met"
+	// 	}
 
-		results = append(results, res)
-	}
+	// 	results = append(results, res)
+	// }
 
 	return &voucherv1.EvaluateVouchersResponse{Results: results}, nil
 }
 
 // --- IssueVoucher ---
-func (s *Service) IssueVoucher(ctx context.Context, req *voucherv1.IssueVoucherRequest) (*voucherv1.VoucherIssuance, error) {
-	tx := s.db.WithContext(ctx).Begin()
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-		}
-	}()
+func (s *Service) IssueVoucher(ctx context.Context, req *voucherv1.IssueVoucherRequest) (*voucherv1.IssueVoucherResponse, error) {
+	// var campaign VoucherCampaign
+	// if err := s.db.
+	// 	Where("tenant_id = ? AND campaign_id = ? AND is_active = true", req.TenantId, req.CampaignId).
+	// 	First(&campaign).Error; err != nil {
+	// 	return nil, status.Errorf(codes.NotFound, "campaign not found or inactive")
+	// }
 
-	var v Voucher
-	if err := tx.
-		Where("tenant_id = ? AND code = ? AND is_active = TRUE", req.TenantId, req.VoucherCode).
-		First(&v).Error; err != nil {
-		tx.Rollback()
-		return nil, err
-	}
+	// if campaign.RemainingStock < req.GetCount() {
+	// 	return nil, status.Errorf(codes.FailedPrecondition, "not enough stock")
+	// }
 
-	// Decrement stock atomically
-	res := tx.Model(&Voucher{}).
-		Where("voucher_id = ? AND remaining_stock > 0", v.VoucherID).
-		Update("remaining_stock", gorm.Expr("remaining_stock - 1"))
-	if res.Error != nil || res.RowsAffected == 0 {
-		tx.Rollback()
-		return nil, fmt.Errorf("voucher out of stock")
-	}
+	// var issueds []*voucherv1.Voucher
+	// for i := 0; i < int(req.Count); i++ {
+	// 	voucherCode, err := s.seq.NextVoucherCode(ctx, req.GetTenantId(), campaign.Code)
+	// 	if err != nil {
+	// 		zap.L().Error("failed generate voucher code", zap.Error(err))
+	// 		return nil, fmt.Errorf("failed generate voucher: %w\n", err)
+	// 	}
 
-	issuance := VoucherIssuance{
-		IssuanceID: s.node.Generate().String(),
-		TenantID:   req.TenantId,
-		VoucherID:  v.VoucherID,
-		UserID:     req.UserId,
-		Status:     voucherv1.IssuanceStatus_ISSUED,
-		IssuedAt:   time.Now(),
-	}
-	if err := tx.Create(&issuance).Error; err != nil {
-		tx.Rollback()
-		return nil, err
-	}
-	if err := tx.Commit().Error; err != nil {
-		return nil, err
-	}
+	// 	voucherID := s.node.Generate().String()
+	// 	if err := s.db.Create(&Voucher{
+	// 		VoucherID:  voucherID,
+	// 		TenantID:   req.TenantId,
+	// 		CampaignID: req.CampaignId,
+	// 		Code:       voucherCode,
+	// 		IsActive:   true,
+	// 		ExpiryDate: campaign.EndAt,
+	// 		CreatedAt:  time.Now(),
+	// 		UpdatedAt:  time.Now(),
+	// 	}).Error; err != nil {
+	// 		return nil, err
+	// 	}
 
-	return issuance.ToProto(), nil
+	// 	issueVoucherID := s.node.Generate().String()
+	// 	if err := s.db.Create(&VoucherIssuance{
+	// 		IssuanceID: issueVoucherID,
+	// 		TenantID:   req.TenantId,
+	// 		VoucherID:  voucherID,
+	// 		UserID:     req.UserId,
+	// 		Status:     voucherv1.IssuanceStatus_ISSUED,
+	// 		IssuedAt:   time.Now(),
+	// 	}).Error; err != nil {
+	// 		return nil, err
+	// 	}
+
+	// 	issueds = append(issueds, &voucherv1.Voucher{
+	// 		VoucherId:  voucherID,
+	// 		Code:       voucherCode,
+	// 		ExpiryDate: timestamppb.New(*campaign.EndAt),
+	// 	})
+	// }
+
+	// s.db.Model(&campaign).Update("remaining_stock", gorm.Expr("remaining_stock - ?", req.Count))
+
+	return &voucherv1.IssueVoucherResponse{}, nil
 }
 
 // --- RedeemVoucher ---

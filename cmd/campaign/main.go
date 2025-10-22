@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"log"
+	"os"
 
 	"github.com/bwmarrin/snowflake"
+	"github.com/hibiken/asynq"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
@@ -11,6 +14,7 @@ import (
 	"go.uber.org/fx/fxevent"
 	"go.uber.org/zap"
 
+	"smallbiznis-controlplane/pkg/client"
 	"smallbiznis-controlplane/pkg/config"
 	"smallbiznis-controlplane/pkg/db"
 	"smallbiznis-controlplane/pkg/httpapi"
@@ -18,7 +22,7 @@ import (
 	"smallbiznis-controlplane/pkg/redis"
 	"smallbiznis-controlplane/pkg/sequence"
 	"smallbiznis-controlplane/pkg/server"
-	"smallbiznis-controlplane/services/voucher"
+	"smallbiznis-controlplane/services/campaign"
 )
 
 func main() {
@@ -32,11 +36,18 @@ func main() {
 			server.RegisterServerMux,
 			provideTracerProvider,
 			provideMeterProvider,
+		),
+		fx.Provide(
 			provideSnowflakeNode,
+			registerClient,
+		),
+		fx.Provide(
+			client.NewRuleClient,
+			client.NewLedgerClient,
 		),
 		httpapi.Module,
-		voucher.Module,
-		voucher.Gateway,
+		campaign.Module,
+		campaign.Gateway,
 		server.ProvideGRPCServer,
 		server.ProvideHTTPServer,
 		fxLogger,
@@ -65,4 +76,29 @@ func provideMeterProvider() metric.MeterProvider {
 
 func provideSnowflakeNode() (*snowflake.Node, error) {
 	return snowflake.NewNode(1)
+}
+
+func registerClient(lc fx.Lifecycle, cfg *config.Config) *asynq.Client {
+	client := asynq.NewClient(
+		asynq.RedisClientOpt{
+			Addr:     cfg.Redis.Addr,
+			Password: cfg.Redis.Password,
+			DB:       cfg.Redis.DB,
+		},
+	)
+
+	if err := client.Ping(); err != nil {
+		zap.L().Error("[Asynq] Failed to connect to Asynq", zap.Error(err))
+		os.Exit(1)
+	}
+
+	zap.L().Info("[Asynq] Connected to Asynq")
+
+	lc.Append(fx.Hook{
+		OnStop: func(ctx context.Context) error {
+			return client.Close()
+		},
+	})
+
+	return client
 }

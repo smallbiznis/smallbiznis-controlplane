@@ -15,9 +15,10 @@ var Module = fx.Module("sequence",
 
 type Generator interface {
 	NextTenantCode(ctx context.Context) (string, error)
-	NextTransactionCode(ctx context.Context, tenantCode string) (string, error)
-	NextCampaignCode(ctx context.Context, tenantCode string) (string, error)
-	NextVoucherCode(ctx context.Context, tenantCode, campaignCode string) (string, error)
+	NextRuleCode(ctx context.Context, tenantID string) (string, error)
+	NextTransactionCode(ctx context.Context, tenantID string) (string, error)
+	NextCampaignCode(ctx context.Context, tenantID string) (string, error)
+	NextVoucherCode(ctx context.Context, tenantID, campaignCode string) (string, error)
 }
 
 type RedisGenerator struct {
@@ -45,17 +46,21 @@ func (g *RedisGenerator) NextTenantCode(ctx context.Context) (string, error) {
 	return fmt.Sprintf("T%03d", seq), nil
 }
 
-func (g *RedisGenerator) NextTransactionCode(ctx context.Context, tenantCode string) (string, error) {
-	return g.nextDailyCode(ctx, "TXN", tenantCode, false)
+func (g *RedisGenerator) NextRuleCode(ctx context.Context, tenantID string) (string, error) {
+	return g.nextDailyCode(ctx, "RL", tenantID, false)
 }
 
-func (g *RedisGenerator) NextCampaignCode(ctx context.Context, tenantCode string) (string, error) {
-	return g.nextDailyCode(ctx, "CMP", tenantCode, true)
+func (g *RedisGenerator) NextTransactionCode(ctx context.Context, tenantID string) (string, error) {
+	return g.nextDailyCode(ctx, "TXN", tenantID, false)
 }
 
-func (g *RedisGenerator) NextVoucherCode(ctx context.Context, tenantCode, campaignCode string) (string, error) {
+func (g *RedisGenerator) NextCampaignCode(ctx context.Context, tenantID string) (string, error) {
+	return g.nextDailyCode(ctx, "CMP", tenantID, true)
+}
+
+func (g *RedisGenerator) NextVoucherCode(ctx context.Context, tenantID, campaignCode string) (string, error) {
 	today := time.Now().UTC().Format("20060102")
-	key := fmt.Sprintf("seq:VCHR:%s:%s:%s", tenantCode, campaignCode, today)
+	key := fmt.Sprintf("seq:VCHR:%s:%s:%s", tenantID, campaignCode, today)
 
 	seq, err := g.rdb.Incr(ctx, key).Result()
 	if err != nil {
@@ -85,7 +90,7 @@ func (g *RedisGenerator) nextDailyCode(ctx context.Context, prefix, tenantCode s
 	}
 
 	if includeTenantInCode {
-		return fmt.Sprintf("%s-%s-%s%05d", prefix, tenantCode, today, seq), nil
+		return fmt.Sprintf("%s-%s%05d", prefix, today, seq), nil
 	}
 	return fmt.Sprintf("%s-%s-%05d", prefix, today, seq), nil
 }

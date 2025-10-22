@@ -159,11 +159,10 @@ func toProto(tx *Transaction) *transactionv1.Transaction {
 	md := &structpb.Struct{}
 	_ = md.UnmarshalJSON([]byte(tx.Metadata))
 	return &transactionv1.Transaction{
-		Id:            tx.ID,
-		TransactionId: tx.TransactionID,
-		TenantId:      tx.TenantID,
-		UserId:        tx.UserID,
-		OrderId:       tx.OrderID,
+		Id:       tx.ID,
+		TenantId: tx.TenantID,
+		UserId:   tx.UserID,
+		OrderId:  tx.OrderID,
 		Amount: &common.Money{
 			CurrencyCode: tx.CurrencyCode,
 			Amount:       int64(tx.Amount),

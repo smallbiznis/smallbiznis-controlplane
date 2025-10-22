@@ -11,17 +11,17 @@ import (
 
 // Rule represents a persisted rule definition.
 type Rule struct {
-	RuleID        string                 `gorm:"column:rule_id;primaryKey"`
-	TenantID      string                 `gorm:"column:tenant_id;index"`
-	Name          string                 `gorm:"column:name"`
-	Description   string                 `gorm:"column:description"`
-	IsActive      bool                   `gorm:"column:is_active"`
-	Priority      int32                  `gorm:"column:priority"`
-	Trigger       rulev1.RuleTriggerType `gorm:"column:trigger"`
-	DSLExpression string                 `gorm:"column:dsl_expression"`
-	Actions       datatypes.JSON         `gorm:"column:actions"`
-	CreatedAt     time.Time              `gorm:"column:created_at"`
-	UpdatedAt     time.Time              `gorm:"column:updated_at"`
+	RuleID        string         `gorm:"column:rule_id;primaryKey"`
+	TenantID      string         `gorm:"column:tenant_id;index"`
+	Name          string         `gorm:"column:name"`
+	Description   string         `gorm:"column:description"`
+	IsActive      bool           `gorm:"column:is_active"`
+	Priority      int32          `gorm:"column:priority"`
+	Trigger       string         `gorm:"column:trigger"`
+	DSLExpression string         `gorm:"column:dsl_expression"`
+	Actions       datatypes.JSON `gorm:"column:actions"`
+	CreatedAt     time.Time      `gorm:"column:created_at"`
+	UpdatedAt     time.Time      `gorm:"column:updated_at"`
 }
 
 // SetActions serialises the provided actions list into the JSON column.
@@ -70,7 +70,7 @@ func (r *Rule) ToProto() (*rulev1.Rule, error) {
 		Description:   r.Description,
 		IsActive:      r.IsActive,
 		Priority:      r.Priority,
-		Trigger:       r.Trigger,
+		Trigger:       rulev1.RuleTriggerType(rulev1.RuleTriggerType_value[r.Trigger]),
 		DslExpression: r.DSLExpression,
 		Actions:       protoActions,
 	}
@@ -82,9 +82,9 @@ func (r *Rule) ToProto() (*rulev1.Rule, error) {
 		out.UpdatedAt = timestamppb.New(r.UpdatedAt)
 	}
 	if r.IsActive {
-		out.Status = rulev1.RuleStatus_RULE_STATUS_ACTIVE
+		out.Status = rulev1.RuleStatus_ACTIVE
 	} else {
-		out.Status = rulev1.RuleStatus_RULE_STATUS_INACTIVE
+		out.Status = rulev1.RuleStatus_INACTIVE
 	}
 
 	return out, nil
@@ -114,16 +114,16 @@ func (r *RuleAction) UnmarshalJSON(data []byte) error {
 	}
 
 	switch aux.Type {
-	case "RULE_ACTION_TYPE_REWARD_POINT":
-		r.Type = rulev1.RuleActionType_RULE_ACTION_TYPE_REWARD_POINT
-	case "RULE_ACTION_TYPE_VOUCHER":
-		r.Type = rulev1.RuleActionType_RULE_ACTION_TYPE_VOUCHER
-	case "RULE_ACTION_TYPE_CASHBACK":
-		r.Type = rulev1.RuleActionType_RULE_ACTION_TYPE_CASHBACK
-	case "RULE_ACTION_TYPE_NOTIFY":
-		r.Type = rulev1.RuleActionType_RULE_ACTION_TYPE_NOTIFY
-	case "RULE_ACTION_TYPE_TAG":
-		r.Type = rulev1.RuleActionType_RULE_ACTION_TYPE_TAG
+	case "REWARD_POINT":
+		r.Type = rulev1.RuleActionType_REWARD_POINT
+	case "VOUCHER":
+		r.Type = rulev1.RuleActionType_VOUCHER
+	case "CASHBACK":
+		r.Type = rulev1.RuleActionType_CASHBACK
+	case "NOTIFY":
+		r.Type = rulev1.RuleActionType_NOTIFY
+	case "TAG":
+		r.Type = rulev1.RuleActionType_TAG
 	default:
 		r.Type = rulev1.RuleActionType_RULE_ACTION_TYPE_UNSPECIFIED
 	}
@@ -237,7 +237,7 @@ func ProtoActionsFromModel(actions []RuleAction) ([]*rulev1.RuleAction, error) {
 	for _, action := range actions {
 		proto := &rulev1.RuleAction{Type: action.Type}
 		switch action.Type {
-		case rulev1.RuleActionType_RULE_ACTION_TYPE_REWARD_POINT:
+		case rulev1.RuleActionType_REWARD_POINT:
 			if action.PointAction != nil {
 				proto.PointAction = &rulev1.PointAction{
 					Points:    action.PointAction.Points,
@@ -245,7 +245,7 @@ func ProtoActionsFromModel(actions []RuleAction) ([]*rulev1.RuleAction, error) {
 					Metadata:  cloneMap(action.PointAction.Metadata),
 				}
 			}
-		case rulev1.RuleActionType_RULE_ACTION_TYPE_VOUCHER:
+		case rulev1.RuleActionType_VOUCHER:
 			if action.VoucherAction != nil {
 				voucher := &rulev1.VoucherAction{
 					VoucherCode:   action.VoucherAction.VoucherCode,
@@ -258,7 +258,7 @@ func ProtoActionsFromModel(actions []RuleAction) ([]*rulev1.RuleAction, error) {
 				}
 				proto.VoucherAction = voucher
 			}
-		case rulev1.RuleActionType_RULE_ACTION_TYPE_CASHBACK:
+		case rulev1.RuleActionType_CASHBACK:
 			if action.CashbackAction != nil {
 				proto.CashbackAction = &rulev1.CashbackAction{
 					Amount:         action.CashbackAction.Amount,
@@ -267,7 +267,7 @@ func ProtoActionsFromModel(actions []RuleAction) ([]*rulev1.RuleAction, error) {
 					Metadata:       cloneMap(action.CashbackAction.Metadata),
 				}
 			}
-		case rulev1.RuleActionType_RULE_ACTION_TYPE_NOTIFY:
+		case rulev1.RuleActionType_NOTIFY:
 			if action.NotifyAction != nil {
 				proto.NotifyAction = &rulev1.NotifyAction{
 					Channel:    action.NotifyAction.Channel,
@@ -275,7 +275,7 @@ func ProtoActionsFromModel(actions []RuleAction) ([]*rulev1.RuleAction, error) {
 					Metadata:   cloneMap(action.NotifyAction.Metadata),
 				}
 			}
-		case rulev1.RuleActionType_RULE_ACTION_TYPE_TAG:
+		case rulev1.RuleActionType_TAG:
 			if action.TagAction != nil {
 				proto.TagAction = &rulev1.TagAction{
 					TagKey:   action.TagAction.TagKey,

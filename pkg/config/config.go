@@ -113,8 +113,13 @@ type Config struct {
 		Addr      string `mapstructure:"ADDR"`
 		Namespace string `mapstructure:"NAMESPACE"`
 	} `mapstructure:"TEMPORAL"`
-	RuleEngineURL string `mapstructure:"RULE_ENGINE_URL"`
-	LedgerURL     string `mapstructure:"LEDGER_URL"`
+	TenantURL       string `mapstructure:"TENANT_URL"`
+	CampaignURL     string `mapstructure:"CAMPAIGN_URL"`
+	RuleEngineURL   string `mapstructure:"RULE_ENGINE_URL"`
+	LoyaltyURL      string `mapstructure:"LOYALTY_URL"`
+	LedgerURL       string `mapstructure:"LEDGER_URL"`
+	VoucherURL      string `mapstructure:"VOUCHER_URL"`
+	NotificationURL string `mapstructure:"NOTIFICATION_URL"`
 }
 
 var Module = fx.Module("config", fx.Provide(LoadConfig))

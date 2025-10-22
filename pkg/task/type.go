@@ -1,4 +1,4 @@
-package task
+package orchestrator
 
 const (
 	UploadVideoTask      = "video:upload"

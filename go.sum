@@ -598,8 +598,12 @@ github.com/sean-/seed v0.0.0-20170313163322-e2103e2c3529/go.mod h1:DxrIzT+xaE7yg
 github.com/sirupsen/logrus v1.2.0/go.mod h1:LxeOpSwHxABJmUn/MG1IvRgCAasNZTLOkJPxbbu5VWo=
 github.com/sirupsen/logrus v1.4.2/go.mod h1:tLMulIdttU9McNUspp0xgXVQah82FyeX6MwdIuYE2rE=
 github.com/sirupsen/logrus v1.6.0/go.mod h1:7uNnSEd1DgxDLC74fIahvMZmmYsHGZGEOFrfsX/uA88=
-github.com/smallbiznis/go-genproto v0.0.0-20251021064213-45b286db663d h1:RqSg9sB+lLyhcEnBDr1kpQJdeQsZdVo+APhN2RulUFs=
-github.com/smallbiznis/go-genproto v0.0.0-20251021064213-45b286db663d/go.mod h1:9gkzsv0geyUMjn2yMJfRsQY/FJL9ScwpkxRNn8F58H8=
+github.com/smallbiznis/go-genproto v0.0.0-20251022064019-6f441da1b44e h1:l++0iJSPNPsqTnoRi9y1sTzOe8PEvVgChji7UuccRtQ=
+github.com/smallbiznis/go-genproto v0.0.0-20251022064019-6f441da1b44e/go.mod h1:9gkzsv0geyUMjn2yMJfRsQY/FJL9ScwpkxRNn8F58H8=
+github.com/smallbiznis/go-genproto v0.0.0-20251022124755-add540cbf92e h1:69lxMQQohstf0/6Fp3+P1KPfFvidoadEEgnKt5bByVA=
+github.com/smallbiznis/go-genproto v0.0.0-20251022124755-add540cbf92e/go.mod h1:9gkzsv0geyUMjn2yMJfRsQY/FJL9ScwpkxRNn8F58H8=
+github.com/smallbiznis/go-genproto v0.0.0-20251022133211-9eed509a9a68 h1:NTNpzKd2CTZzH2b9En5uw4+UcJv0IoPOQ+DCcVQAI+Y=
+github.com/smallbiznis/go-genproto v0.0.0-20251022133211-9eed509a9a68/go.mod h1:9gkzsv0geyUMjn2yMJfRsQY/FJL9ScwpkxRNn8F58H8=
 github.com/sourcegraph/conc v0.3.1-0.20240121214520-5f936abd7ae8 h1:+jumHNA0Wrelhe64i8F6HNlS8pkoyMv5sreGx2Ry5Rw=
 github.com/sourcegraph/conc v0.3.1-0.20240121214520-5f936abd7ae8/go.mod h1:3n1Cwaq1E1/1lhQhtRK2ts/ZwZEhjcQeJQ1RuC6Q/8U=
 github.com/spf13/afero v1.15.0 h1:b/YBCLWAJdFWJTN9cLhiXXcD7mzKn9Dm86dNnfyQw1I=

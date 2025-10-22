@@ -9,13 +9,14 @@ import (
 type Status string
 
 var (
-	Pending Status = "pending"
-	Success Status = "success"
+	Pending Status = "PENDING"
+	Success Status = "SUCCESS"
+	Failed  Status = "FAILED"
 )
 
 func (s Status) String() string {
 	switch s {
-	case Pending, Success:
+	case Pending, Success, Failed:
 		return string(s)
 	default:
 		return ""
@@ -25,11 +26,11 @@ func (s Status) String() string {
 type TransactionType string
 
 var (
-	Earning    TransactionType = "earning"
-	Cashback   TransactionType = "cashback"
-	Redemption TransactionType = "redemption"
-	Adjustment TransactionType = "adjustment"
-	Expire     TransactionType = "expire"
+	Earning    TransactionType = "EARNING"
+	Cashback   TransactionType = "CASHBACK"
+	Redemption TransactionType = "REDEMPTION"
+	Adjustment TransactionType = "ADJUSTMENT"
+	Expire     TransactionType = "EXPIRE"
 )
 
 func (t TransactionType) String() string {
@@ -42,22 +43,24 @@ func (t TransactionType) String() string {
 }
 
 type PointTransaction struct {
-	ID        string    `gorm:"column:id;primaryKey;type:char(26)"`
-	CreatedAt time.Time `gorm:"column:created_at"`
-	UpdatedAt time.Time `gorm:"column:updated_at"`
-	TenantID  string    `gorm:"column:tenant_id;index;not null"`
-	MemberID  string    `gorm:"column:member_id;index;not null"`
-	// TransactionID string          `gorm:"column:transaction_id"`
-	ReferenceID string          `gorm:"column:reference_id;index;not null"`
-	Type        TransactionType `gorm:"column:type;type:varchar(20);not null"` // "earning" | "redeem" | "adjustment" | "expire"
-	RuleID      string          `gorm:"column:rule_id;index"`
-	RewardID    string          `gorm:"column:reward_id;index"`
-	RewardType  string          `gorm:"column:reward_type;type:varchar(30)"`
-	PointDelta  int64           `gorm:"column:point_delta;not null"` // +ve for earning, -ve for redeem
-	Status      string          `gorm:"column:status;type:varchar(20);default:'pending'"`
-	Description string          `gorm:"column:description;type:text"`
-	Metadata    datatypes.JSON  `gorm:"column:metadata;type:jsonb"`
-	EventTime   time.Time       `gorm:"column:event_time;autoCreateTime"`
-	ProcessedAt *time.Time      `gorm:"column:processed_at"`
-	ExpireDate  *time.Time      `gorm:"column:expire_date;index"`
+	ID           string          `gorm:"column:id;primaryKey"`
+	TenantID     string          `gorm:"column:tenant_id;index;not null"`
+	UserID       string          `gorm:"column:user_id;index;not null"`
+	ReferenceID  string          `gorm:"column:reference_id;index;not null"`
+	Type         TransactionType `gorm:"column:type;type:varchar(20);not null"`
+	RuleID       string          `gorm:"column:rule_id"`
+	CampaignID   string          `gorm:"column:campaign_id"`
+	RewardID     string          `gorm:"column:reward_id"`
+	RewardType   string          `gorm:"column:reward_type"`
+	RewardName   string          `gorm:"column:reward_name"`
+	PointDelta   int64           `gorm:"column:point_delta"`
+	BalanceAfter int64           `gorm:"column:balance_after"`
+	Status       Status          `gorm:"column:status;default:'pending'"`
+	Description  string          `gorm:"column:description"`
+	Metadata     datatypes.JSON  `gorm:"column:metadata;type:jsonb"`
+	EventTime    time.Time       `gorm:"column:event_time"`
+	ProcessedAt  *time.Time      `gorm:"column:processed_at"`
+	ExpireDate   *time.Time      `gorm:"column:expire_date"`
+	CreatedAt    time.Time       `gorm:"column:created_at;autoCreateTime"`
+	UpdatedAt    time.Time       `gorm:"column:updated_at;autoUpdateTime"`
 }

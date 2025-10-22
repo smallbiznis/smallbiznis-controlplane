@@ -100,7 +100,7 @@ func (s *Service) CreateRule(ctx context.Context, req *rulev1.CreateRuleRequest)
 		Description:   req.GetDescription(),
 		IsActive:      req.GetIsActive(),
 		Priority:      req.GetPriority(),
-		Trigger:       req.GetTrigger(),
+		Trigger:       req.GetTrigger().String(),
 		DSLExpression: req.GetDslExpression(),
 		CreatedAt:     now,
 		UpdatedAt:     now,
@@ -263,10 +263,10 @@ func (s *Service) UpdateRule(ctx context.Context, req *rulev1.UpdateRuleRequest)
 	existing.Description = req.GetDescription()
 	existing.IsActive = req.GetIsActive()
 	if statusValue := req.GetStatus(); statusValue != rulev1.RuleStatus_RULE_STATUS_UNSPECIFIED {
-		existing.IsActive = statusValue == rulev1.RuleStatus_RULE_STATUS_ACTIVE
+		existing.IsActive = statusValue == rulev1.RuleStatus_ACTIVE
 	}
 	existing.Priority = req.GetPriority()
-	existing.Trigger = req.GetTrigger()
+	existing.Trigger = req.GetTrigger().String()
 	existing.DSLExpression = req.GetDslExpression()
 	existing.UpdatedAt = time.Now().UTC()
 	if err := existing.SetActions(actions); err != nil {
@@ -368,6 +368,9 @@ func (s *Service) BatchEvaluate(ctx context.Context, req *rulev1.BatchEvaluateRe
 	if len(req.RuleIds) == 0 {
 		rs, err := s.repo.List(ctx, req.GetTenantId(), ListParams{
 			IncludeInactive: false,
+			Triggers: []rulev1.RuleTriggerType{
+				req.Trigger,
+			},
 		})
 		if err != nil {
 			return nil, status.Error(codes.Internal, "failed to get active rules")
@@ -386,11 +389,9 @@ func (s *Service) BatchEvaluate(ctx context.Context, req *rulev1.BatchEvaluateRe
 		return nil, status.Error(codes.Internal, "failed to evaluate rules")
 	}
 
-	zap.L().Debug("Results", zap.Any("results", results))
-
 	var totalMatched int32
 	for _, res := range results {
-		if res.GetStatus() == rulev1.EvaluationStatus_EVALUATION_STATUS_SUCCESS && res.GetMatched() {
+		if res.GetStatus() == rulev1.EvaluationStatus_SUCCESS && res.GetMatched() {
 			totalMatched++
 		}
 	}
@@ -449,7 +450,7 @@ func (s *Service) evaluateRulesBatch(ctx context.Context, tenantID string, ruleI
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				results = append(results, &rulev1.RuleEvaluationResult{
 					RuleId:       ruleID,
-					Status:       rulev1.EvaluationStatus_EVALUATION_STATUS_ERROR,
+					Status:       rulev1.EvaluationStatus_ERROR,
 					ErrorMessage: "rule not found",
 				})
 				continue
@@ -484,13 +485,13 @@ func (s *Service) evaluateRulesBatch(ctx context.Context, tenantID string, ruleI
 func (s *Service) evaluateRuleResult(rule *Rule, ctxMap map[string]any) *rulev1.RuleEvaluationResult {
 	result := &rulev1.RuleEvaluationResult{
 		RuleId: rule.RuleID,
-		Status: rulev1.EvaluationStatus_EVALUATION_STATUS_SUCCESS,
+		Status: rulev1.EvaluationStatus_SUCCESS,
 	}
 
 	matched, actionValue, err := s.executeRule(rule, ctxMap)
 	if err != nil {
 		s.logger.Error("rule evaluation failed", zap.String("rule_id", rule.RuleID), zap.String("rule_name", rule.Name), zap.Error(err))
-		result.Status = rulev1.EvaluationStatus_EVALUATION_STATUS_ERROR
+		result.Status = rulev1.EvaluationStatus_ERROR
 		result.ErrorMessage = "failed to evaluate rule"
 		return result
 	}
@@ -553,7 +554,7 @@ func buildActionSummary(actions []RuleAction) (*structpb.Struct, error) {
 		entry := map[string]any{"type": action.Type.String()}
 
 		switch action.Type {
-		case rulev1.RuleActionType_RULE_ACTION_TYPE_REWARD_POINT:
+		case rulev1.RuleActionType_REWARD_POINT:
 			if p := action.PointAction; p != nil {
 				entry["points"] = p.Points
 				entry["reference"] = p.Reference
@@ -562,7 +563,7 @@ func buildActionSummary(actions []RuleAction) (*structpb.Struct, error) {
 				totalPoints += p.Points
 			}
 
-		case rulev1.RuleActionType_RULE_ACTION_TYPE_VOUCHER:
+		case rulev1.RuleActionType_VOUCHER:
 			if v := action.VoucherAction; v != nil {
 				detail := map[string]any{
 					"voucher_code":   v.VoucherCode,
@@ -579,7 +580,7 @@ func buildActionSummary(actions []RuleAction) (*structpb.Struct, error) {
 				totalVoucherDiscount += v.DiscountValue
 			}
 
-		case rulev1.RuleActionType_RULE_ACTION_TYPE_CASHBACK:
+		case rulev1.RuleActionType_CASHBACK:
 			if c := action.CashbackAction; c != nil {
 				detail := map[string]any{
 					"amount":   c.Amount,
@@ -594,7 +595,7 @@ func buildActionSummary(actions []RuleAction) (*structpb.Struct, error) {
 				entry["cashback"] = detail
 			}
 
-		case rulev1.RuleActionType_RULE_ACTION_TYPE_NOTIFY:
+		case rulev1.RuleActionType_NOTIFY:
 			if n := action.NotifyAction; n != nil {
 				detail := map[string]any{
 					"channel":     n.Channel,
@@ -606,7 +607,7 @@ func buildActionSummary(actions []RuleAction) (*structpb.Struct, error) {
 				entry["notification"] = detail
 			}
 
-		case rulev1.RuleActionType_RULE_ACTION_TYPE_TAG:
+		case rulev1.RuleActionType_TAG:
 			if t := action.TagAction; t != nil {
 				tag := map[string]any{"tag_key": t.TagKey, "tag_value": t.TagValue}
 				entry["tag"] = tag

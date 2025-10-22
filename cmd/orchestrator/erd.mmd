@@ -1,0 +1,20 @@
+erDiagram
+    EARNING_EVENTS {
+        varchar id PK
+        varchar tenant_id
+        varchar user_id
+        varchar event_type
+        jsonb attributes
+        varchar reference
+    }
+
+    EARNING_RESULTS {
+        varchar id PK
+        varchar tenant_id
+        varchar user_id
+        varchar campaign_id
+        varchar reward_type
+        jsonb reward_data
+    }
+
+    EARNING_EVENTS ||--|{ EARNING_RESULTS : "event_id (implicit)" }

@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"sync"
 
+	"go.uber.org/zap"
+	// "google.golang.org/protobuf/types/known/structpb"
 	"github.com/google/cel-go/cel"
 )
 
@@ -79,18 +81,20 @@ func BuildCelEnvFromAttributes(attrs map[string]interface{}) (*cel.Env, error) {
 	return env, nil
 }
 
-func StructToMap(s interface{}) map[string]interface{} {
+func StructToMap(s any) map[string]any {
 	if s == nil {
-		return map[string]interface{}{}
+		return map[string]any{}
 	}
 
 	b, err := json.Marshal(s)
 	if err != nil {
+		zap.L().Debug("failed StructToMap Marshal", zap.Error(err))
 		return map[string]interface{}{}
 	}
 
 	var result map[string]interface{}
 	if err := json.Unmarshal(b, &result); err != nil {
+		zap.L().Debug("failed StructToMap Unmarshal", zap.Error(err))
 		return map[string]interface{}{}
 	}
 

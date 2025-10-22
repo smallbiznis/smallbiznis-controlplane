@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/bwmarrin/snowflake"
@@ -11,6 +12,7 @@ import (
 	ledgerv1 "github.com/smallbiznis/go-genproto/smallbiznis/ledger/v1"
 	loyaltyv1 "github.com/smallbiznis/go-genproto/smallbiznis/loyalty/v1"
 	rulev1 "github.com/smallbiznis/go-genproto/smallbiznis/rule/v1"
+	voucherv1 "github.com/smallbiznis/go-genproto/smallbiznis/voucher/v1"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -27,8 +29,9 @@ type Task struct {
 	node  *snowflake.Node
 	asynq *asynq.Client
 
-	rule   rulev1.RuleServiceClient
-	ledger ledgerv1.LedgerServiceClient
+	rule    rulev1.RuleServiceClient
+	ledger  ledgerv1.LedgerServiceClient
+	voucher voucherv1.VoucherServiceClient
 }
 
 type TaskParams struct {
@@ -38,17 +41,19 @@ type TaskParams struct {
 	Node  *snowflake.Node
 	Asynq *asynq.Client
 
-	Rule   rulev1.RuleServiceClient     `optional:"true"`
-	Ledger ledgerv1.LedgerServiceClient `optional:"true"`
+	Rule    rulev1.RuleServiceClient       `optional:"true"`
+	Ledger  ledgerv1.LedgerServiceClient   `optional:"true"`
+	Voucher voucherv1.VoucherServiceClient `optional:"true"`
 }
 
 func NewTask(p TaskParams) *Task {
 	return &Task{
-		db:     p.DB,
-		node:   p.Node,
-		asynq:  p.Asynq,
-		rule:   p.Rule,
-		ledger: p.Ledger,
+		db:      p.DB,
+		node:    p.Node,
+		asynq:   p.Asynq,
+		rule:    p.Rule,
+		ledger:  p.Ledger,
+		voucher: p.Voucher,
 	}
 }
 
@@ -85,6 +90,7 @@ func (s *Task) HandleProcessEarningTask(ctx context.Context, t *asynq.Task) erro
 	// 3️⃣ Panggil rule service (contoh pseudo)
 	if err := s.evaluateRules(ctx, earning, &req); err != nil {
 		zap.L().Error("failed evaluated", zap.Error(err))
+		return fmt.Errorf("failed to evaluate rules: %w", err)
 	}
 
 	zapLog.Info("🎉 earning processed successfully")
@@ -93,31 +99,32 @@ func (s *Task) HandleProcessEarningTask(ctx context.Context, t *asynq.Task) erro
 
 // evaluateRules contoh dummy (nanti diimplementasi pakai gRPC ke rule service)
 func (s *Task) evaluateRules(ctx context.Context, earning PointTransaction, req *loyaltyv1.EarningRequest) error {
+	zapLog := zap.L().With(
+		zap.String("tenant_id", req.GetTenantId()),
+		zap.String("earning_id", earning.ID),
+		zap.String("user_id", req.GetUserId()),
+	)
+
 	// 1️⃣ Konversi attributes dari EarningRequest ke protobuf Struct
-	attrMap := map[string]interface{}{}
+	attrMap := map[string]interface{}{
+		"event_type": req.GetEventType(),
+		"user_id":    req.GetUserId(),
+	}
 
 	switch v := req.Attributes.(type) {
 	// use the generated oneof wrapper type for EarningRequest attributes
 	case *loyaltyv1.EarningRequest_Transaction:
 
-		ta := v.Transaction
-		if ta != nil {
-			attrMap = map[string]interface{}{
-				"event_type":        req.GetEventType(),
-				"user_id":           req.GetUserId(),
-				"total_spent":       ta.GetAmount().GetAmount(), // ✅ alias total_spent = amount.value
-				"currency_code":     ta.GetAmount().GetCurrencyCode(),
-				"order_id":          ta.GetOrderId(),
-				"payment_type":      ta.GetPaymentMethod().String(),
-				"channel":           ta.GetChannel().String(),
-				"item_category":     ta.GetCategory(),
-				"item_sub_category": ta.GetSubCategory(),
-				"payment_method":    ta.GetPaymentMethod().String(),
-				"brand_id":          ta.GetBrandId(),
-				"merchant_id":       ta.GetMerchantId(),
-				"outlet_id":         ta.GetOutletId(),
-				"purchase_count":    0,
-			}
+		if ta := req.GetTransaction(); ta != nil {
+			attrMap["total_spent"] = ta.GetAmount().GetAmount()
+			attrMap["currency_code"] = ta.GetAmount().GetCurrencyCode()
+			attrMap["order_id"] = ta.GetOrderId()
+			attrMap["channel"] = ta.GetChannel().String()
+			attrMap["payment_method"] = ta.GetPaymentMethod().String()
+			attrMap["brand_id"] = ta.GetBrandId()
+			attrMap["merchant_id"] = ta.GetMerchantId()
+			attrMap["outlet_id"] = ta.GetOutletId()
+			attrMap["purchase_count"] = ta.GetOutletId()
 		}
 
 		if v.Transaction.Metadata != nil {
@@ -131,7 +138,7 @@ func (s *Task) evaluateRules(ctx context.Context, earning PointTransaction, req 
 
 	contextStruct, err := structpb.NewStruct(attrMap)
 	if err != nil {
-		zap.L().Info("failed to build structpb", zap.Error(err))
+		zapLog.Info("failed to build structpb", zap.Error(err))
 		return err
 	}
 
@@ -141,7 +148,7 @@ func (s *Task) evaluateRules(ctx context.Context, earning PointTransaction, req 
 		Context:  contextStruct,
 	})
 	if err != nil {
-		zap.L().Error("batch evaluate failed", zap.Error(err))
+		zapLog.Error("batch evaluate failed", zap.Error(err))
 		return err
 	}
 
@@ -152,17 +159,40 @@ func (s *Task) evaluateRules(ctx context.Context, earning PointTransaction, req 
 		}
 
 		val := res.ActionValue.AsMap()
-		actions, _ := val["actions"].([]interface{})
-		for _, a := range actions {
-			action := a.(map[string]interface{})
-			actionType := action["type"].(string)
+		arr, ok := val["actions"].([]any)
+		if !ok {
+			continue
+		}
+
+		for _, raw := range arr {
+			act, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+
+			actionType := act["type"].(string)
 
 			switch actionType {
 			case rulev1.RuleActionType_RULE_ACTION_TYPE_REWARD_POINT.String():
-				pts := int64(action["points"].(float64))
-				ref := fmt.Sprint(action["reference"])
 
-				zap.L().Info("🪙 awarding points",
+				var pts int64
+				switch v := act["points"].(type) {
+				case float64:
+					pts = int64(v)
+				case int:
+					pts = int64(v)
+				case string:
+					if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+						pts = n
+					}
+				}
+
+				ref := fmt.Sprint(act["reference"])
+				if ref == "" {
+					ref = "unknown"
+				}
+
+				zapLog.Info("🪙 awarding points",
 					zap.Int64("points", pts),
 					zap.String("reference", ref),
 				)
@@ -176,27 +206,54 @@ func (s *Task) evaluateRules(ctx context.Context, earning PointTransaction, req 
 					ReferenceId: req.GetReferenceId(),
 					Metadata:    map[string]string{"rule_ref": ref},
 				}); err != nil {
-					zap.L().Error("failed to record ledger", zap.String("reference_id", req.GetReferenceId()), zap.Error(err))
+					zapLog.Error("failed to record ledger", zap.String("reference_id", req.GetReferenceId()), zap.Error(err))
 					return err
 				}
 
 				// Update point_transaction
-				if err := s.db.WithContext(ctx).
-					Model(&PointTransaction{}).
-					Where("id = ?", earning.ID).
-					Where("tenant_id = ?", earning.TenantID).
-					Updates(map[string]any{
-						"point_delta": pts,
-						"status":      loyaltyv1.Status_SUCCESS,
-						"expire_date": DefaultEndOfYearDate(),
-						"updated_at":  time.Now(),
-					}).Error; err != nil {
-					zap.L().Error("failed to update earning", zap.Error(err))
+				if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+					// Ledger sudah dipanggil di luar
+					return tx.Model(&PointTransaction{}).
+						Where("id = ? AND tenant_id = ?", earning.ID, earning.TenantID).
+						Updates(map[string]any{
+							"point_delta": pts,
+							"status":      loyaltyv1.Status_SUCCESS,
+							"expire_date": DefaultEndOfYearDate(),
+							"updated_at":  time.Now(),
+						}).Error
+				}); err != nil {
+					return fmt.Errorf("failed to update earning: %w", err)
+				}
+
+			case "RULE_ACTION_TYPE_VOUCHER":
+				campaignID := fmt.Sprint(act["campaign_id"])
+				count := int32(1)
+
+				if c, ok := act["count"].(float64); ok {
+					count = int32(c)
+				}
+
+				zapLog.Info("🎟 issuing voucher",
+					zap.String("campaign_id", campaignID),
+					zap.Int32("count", count),
+				)
+
+				reqIssue := &voucherv1.IssueVoucherRequest{
+					TenantId:   req.GetTenantId(),
+					UserId:     req.GetUserId(),
+					CampaignId: campaignID,
+				}
+
+				resp, err := s.voucher.IssueVoucher(ctx, reqIssue)
+				if err != nil {
+					zapLog.Error("failed to issue voucher", zap.Error(err))
 					return err
 				}
 
-				// case "RULE_ACTION_TYPE_VOUCHER":
-				//     issue voucher...
+				zapLog.Info("✅ voucher issued",
+					zap.String("campaign_id", campaignID),
+					zap.Int("issued_count", len(resp.Vouchers)),
+				)
 
 				// case "RULE_ACTION_TYPE_NOTIFY":
 				//     trigger notification...

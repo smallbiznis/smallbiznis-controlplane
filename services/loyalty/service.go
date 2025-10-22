@@ -47,6 +47,108 @@ func NewService(p ServiceParams) *Service {
 	}
 }
 
+func (s *Service) AddPoint(
+	ctx context.Context,
+	req *loyaltyv1.AddPointsRequest,
+) (*loyaltyv1.AddPointsResponse, error) {
+	zapLog := zap.L().With(
+		zap.String("tenant_id", req.GetTenantId()),
+		zap.String("user_id", req.GetUserId()),
+		zap.String("reference_id", req.GetReferenceId()),
+	)
+	zapLog.Info("▶️ AddPoint called")
+
+	tx := s.db.WithContext(ctx).Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	now := time.Now()
+	pointTxID := s.node.Generate().String()
+
+	// 1️⃣ Catat ke ledger
+	ledgerEntry, err := s.ledger.AddEntry(ctx, &ledgerv1.AddEntryRequest{
+		TenantId:    req.GetTenantId(),
+		MemberId:    req.GetUserId(),
+		Type:        ledgerv1.EntryType_CREDIT,
+		Amount:      req.GetPoints(),
+		ReferenceId: req.GetReferenceId(),
+		Metadata: map[string]string{
+			"source": "loyalty.AddPoints",
+		},
+	})
+	if err != nil {
+		tx.Rollback()
+		zapLog.Error("failed to record to ledger", zap.Error(err))
+		return nil, fmt.Errorf("ledger add entry failed: %w", err)
+	}
+
+	// 2️⃣ Ambil current balance (setelah add)
+	balanceResp, err := s.ledger.GetBalance(ctx, &ledgerv1.GetBalanceRequest{
+		TenantId: req.GetTenantId(),
+		MemberId: req.GetUserId(),
+	})
+	if err != nil {
+		zapLog.Warn("unable to fetch current balance", zap.Error(err))
+	}
+
+	balanceAfter := balanceResp.GetBalance()
+
+	// 3️⃣ Simpan ke point_transactions (for audit + analytics)
+	pt := PointTransaction{
+		ID:           pointTxID,
+		TenantID:     req.GetTenantId(),
+		UserID:       req.GetUserId(),
+		ReferenceID:  req.GetReferenceId(),
+		Type:         Earning,
+		RuleID:       req.GetRuleId(),
+		CampaignID:   req.GetCampaignId(),
+		RewardID:     ledgerEntry.Id,
+		RewardType:   "point",
+		RewardName:   req.GetRewardName(),
+		PointDelta:   req.GetPoints(),
+		BalanceAfter: balanceAfter,
+		Status:       Success,
+		Description:  req.GetDescription(),
+		EventTime:    now,
+		ProcessedAt:  &now,
+		ExpireDate:   getExpireDate(req.GetExpireDays()),
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+
+	if req.Metadata != nil {
+    if b, err := protojson.Marshal(req.Metadata); err == nil {
+        pt.Metadata = datatypes.JSON(b)
+    }
+} else {
+    pt.Metadata = datatypes.JSON([]byte("{}"))
+}
+
+
+	if err := tx.Create(&pt).Error; err != nil {
+		tx.Rollback()
+		zapLog.Error("failed to insert point transaction", zap.Error(err))
+		return nil, err
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return nil, err
+	}
+
+	zapLog.Info("✅ AddPoints success",
+		zap.Int64("points", req.GetPoints()),
+		zap.Int64("balance_after", balanceAfter),
+	)
+
+	return &loyaltyv1.AddPointsResponse{
+		Points:        balanceAfter,
+		LedgerEntryId: ledgerEntry.GetId(),
+	}, nil
+}
+
 func (s *Service) GetBalance(ctx context.Context, req *loyaltyv1.GetBalanceRequest) (*loyaltyv1.GetBalanceResponse, error) {
 	resp, err := s.ledger.GetBalance(ctx, &ledgerv1.GetBalanceRequest{
 		TenantId: req.TenantId,
@@ -57,6 +159,73 @@ func (s *Service) GetBalance(ctx context.Context, req *loyaltyv1.GetBalanceReque
 	}
 	return &loyaltyv1.GetBalanceResponse{
 		Balance: resp.Balance,
+	}, nil
+}
+
+func (s *Service) Redemption(ctx context.Context, req *loyaltyv1.RedeemRequest) (*loyaltyv1.RedeemResponse, error) {
+	span := trace.SpanFromContext(ctx)
+	defer span.End()
+
+	traceID := span.SpanContext().TraceID().String()
+	spanID := span.SpanContext().SpanID().String()
+
+	traceOpt := []zap.Field{
+		zap.String("trace_id", traceID),
+		zap.String("span_id", spanID),
+		zap.String("tenant_id", req.GetTenantId()),
+	}
+
+	zapLog := zap.L().With(traceOpt...)
+
+	// cek saldo via LedgerService
+	bal, err := s.ledger.GetBalance(ctx, &ledgerv1.GetBalanceRequest{
+		TenantId: req.TenantId,
+		MemberId: req.UserId,
+	})
+	if err != nil {
+		zapLog.Error("failed to get ledger balance", zap.Error(err))
+		return nil, err
+	}
+
+	required := int64(100) // dummy rule sementara
+	if bal.GetBalance() < required {
+		return nil, fmt.Errorf("insufficient points")
+	}
+
+	// call ledger service: deduct points
+	_, err = s.ledger.AddEntry(ctx, &ledgerv1.AddEntryRequest{
+		TenantId:    req.GetTenantId(),
+		MemberId:    req.GetUserId(),
+		ReferenceId: req.GetReferenceId(),
+		Type:        ledgerv1.EntryType_DEBIT,
+		Amount:      required,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	redemptionID := s.node.Generate().String()
+	red := PointTransaction{
+		ID:          redemptionID,
+		TenantID:    req.TenantId,
+		UserID:      req.UserId,
+		ReferenceID: req.ReferenceId,
+		Type:        Redemption,
+		PointDelta:  required,
+		Status:      Success,
+	}
+	if meta, err := json.Marshal(req); err == nil {
+		red.Metadata = meta
+	}
+	if err := s.db.WithContext(ctx).Create(&red).Error; err != nil {
+		return nil, err
+	}
+
+	return &loyaltyv1.RedeemResponse{
+		ReferenceId:   req.ReferenceId,
+		TransactionId: red.ID,
+		Status:        loyaltyv1.Status_SUCCESS,
+		RedeemedAt:    timestamppbNow(),
 	}, nil
 }
 
@@ -97,142 +266,6 @@ func (s *Service) GetExpiringPoints(ctx context.Context, req *loyaltyv1.GetExpir
 	return &loyaltyv1.GetExpiringPointsResponse{
 		TotalExpiringPoints: totalExpiring,
 		Batches:             batches,
-	}, nil
-}
-
-func (s *Service) Earning(ctx context.Context, req *loyaltyv1.EarningRequest) (*loyaltyv1.EarningResponse, error) {
-	span := trace.SpanFromContext(ctx)
-	defer span.End()
-
-	traceID := span.SpanContext().TraceID().String()
-	spanID := span.SpanContext().SpanID().String()
-
-	traceOpt := []zap.Field{
-		zap.String("trace_id", traceID),
-		zap.String("span_id", spanID),
-		zap.String("tenant_id", req.GetTenantId()),
-	}
-
-	zapLog := zap.L().With(traceOpt...)
-
-	earningID := s.node.Generate().String()
-	earning := PointTransaction{
-		ID:          earningID,
-		TenantID:    req.TenantId,
-		MemberID:    req.UserId,
-		ReferenceID: req.ReferenceId,
-		Type:        Earning,
-		PointDelta:  0,
-		Status:      loyaltyv1.Status_PENDING.String(),
-	}
-	if attr, err := protojson.Marshal(req); err == nil {
-		earning.Metadata = datatypes.JSON(attr)
-	}
-
-	if err := s.db.WithContext(ctx).Create(&earning).Error; err != nil {
-		zapLog.Error("failed to insert earning record", zap.Error(err))
-		return nil, err
-	}
-
-	p, _ := json.Marshal(ProcessEarningPayload{
-		EarningID:   earningID,
-		TenantID:    req.GetTenantId(),
-		UserID:      req.GetUserId(),
-		ReferenceID: req.GetReferenceId(),
-		EventType:   req.GetEventType(),
-		TraceID:     traceID,
-	})
-	if _, err := s.asynq.EnqueueContext(ctx,
-		asynq.NewTask(LoyaltyProcessEarning, p),
-		asynq.Queue("loyalty"),
-		asynq.MaxRetry(3),
-	); err != nil {
-		zapLog.Error("failed to enqueue loyalty earning", zap.Error(err))
-		return nil, err
-	}
-
-	return &loyaltyv1.EarningResponse{
-		TransactionId: earning.ID,
-		Status:        loyaltyv1.Status_PENDING,
-		CreatedAt:     timestamppbNow(),
-	}, nil
-}
-
-func (s *Service) Redemption(ctx context.Context, req *loyaltyv1.RedeemRequest) (*loyaltyv1.RedeemResponse, error) {
-	span := trace.SpanFromContext(ctx)
-	defer span.End()
-
-	traceID := span.SpanContext().TraceID().String()
-	spanID := span.SpanContext().SpanID().String()
-
-	traceOpt := []zap.Field{
-		zap.String("trace_id", traceID),
-		zap.String("span_id", spanID),
-		zap.String("tenant_id", req.GetTenantId()),
-	}
-
-	zapLog := zap.L().With(traceOpt...)
-
-	redemptionID := s.node.Generate().String()
-	red := PointTransaction{
-		ID:          redemptionID,
-		TenantID:    req.TenantId,
-		MemberID:    req.UserId,
-		ReferenceID: req.ReferenceId,
-		Type:        Redemption,
-		RewardID:    req.RewardId,
-		RewardType:  req.RewardType.String(),
-		PointDelta:  0,
-		Status:      loyaltyv1.Status_PENDING.String(),
-	}
-	if meta, err := json.Marshal(req); err == nil {
-		red.Metadata = meta
-	}
-	if err := s.db.WithContext(ctx).Create(&red).Error; err != nil {
-		return nil, err
-	}
-
-	// cek saldo via LedgerService
-	bal, err := s.ledger.GetBalance(ctx, &ledgerv1.GetBalanceRequest{
-		TenantId: req.TenantId,
-		MemberId: req.UserId,
-	})
-	if err != nil {
-		zapLog.Error("failed to get ledger balance", zap.Error(err))
-		return nil, err
-	}
-
-	required := int64(100) // dummy rule sementara
-	if bal.GetBalance() < required {
-		s.db.WithContext(ctx).Model(&red).Update("status", "failed")
-		return nil, fmt.Errorf("insufficient points")
-	}
-
-	// call ledger service: deduct points
-	_, err = s.ledger.AddEntry(ctx, &ledgerv1.AddEntryRequest{
-		TenantId:    req.GetTenantId(),
-		MemberId:    req.GetUserId(),
-		ReferenceId: req.GetReferenceId(),
-		Type:        ledgerv1.EntryType_DEBIT,
-		Amount:      required,
-	})
-	if err != nil {
-		s.db.WithContext(ctx).Model(&red).Update("status", "failed")
-		return nil, err
-	}
-
-	now := time.Now()
-	s.db.WithContext(ctx).Model(&red).Updates(map[string]interface{}{
-		"status":       Success,
-		"processed_at": now,
-		"point_delta":  required,
-	})
-
-	return &loyaltyv1.RedeemResponse{
-		ReferenceId:   req.ReferenceId,
-		TransactionId: red.ID,
-		Status:        loyaltyv1.Status_SUCCESS,
-		RedeemedAt:    timestamppbNow(),
 	}, nil
 }
 
@@ -313,6 +346,14 @@ func (s *Service) RunExpiryJob(ctx context.Context, req *loyaltyv1.RunExpiryJobR
 
 func timestamppbNow() *timestamppb.Timestamp {
 	return &timestamppb.Timestamp{Seconds: time.Now().Unix()}
+}
+
+func getExpireDate(days int32) *time.Time {
+	if days <= 0 {
+		return nil
+	}
+	t := time.Now().Add(time.Duration(days) * 24 * time.Hour)
+	return &t
 }
 
 func DefaultEndOfYearDate() *time.Time {

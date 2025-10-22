@@ -1,10 +1,8 @@
 package transaction
 
 import (
-	"fmt"
 	"time"
 
-	"github.com/bwmarrin/snowflake"
 	commonv1 "github.com/smallbiznis/go-genproto/smallbiznis/common"
 	transactionv1 "github.com/smallbiznis/go-genproto/smallbiznis/transaction/v1"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -93,11 +91,10 @@ func (t *Transaction) ToProto() *transactionv1.Transaction {
 	}
 
 	return &transactionv1.Transaction{
-		Id:            t.ID,
-		TenantId:      t.TenantID,
-		UserId:        t.UserID,
-		TransactionId: t.TransactionID,
-		OrderId:       t.OrderID,
+		Id:       t.ID,
+		TenantId: t.TenantID,
+		UserId:   t.UserID,
+		OrderId:  t.OrderID,
 		Amount: &commonv1.Money{
 			CurrencyCode: t.CurrencyCode,
 			Amount:       int64(t.Amount * 100), // convert float → minor unit
@@ -112,7 +109,7 @@ func (t *Transaction) ToProto() *transactionv1.Transaction {
 }
 
 type TransactionItem struct {
-	ItemID        snowflake.ID   `gorm:"column:item_id;primaryKey;autoIncrement"`
+	ItemID        string         `gorm:"column:item_id;primaryKey;autoIncrement"`
 	TransactionID string         `gorm:"column:transaction_id;index;not null"`
 	TenantID      string         `gorm:"column:tenant_id;index;not null"`
 	SKU           string         `gorm:"column:sku;not null"`
@@ -134,13 +131,11 @@ func (i *TransactionItem) ToProto() *transactionv1.TransactionItem {
 	}
 
 	return &transactionv1.TransactionItem{
-		ItemId:        fmt.Sprintf("%d", i.ItemID),
-		TransactionId: i.TransactionID,
-		TenantId:      i.TenantID,
-		Sku:           i.SKU,
-		Name:          i.Name,
-		Category:      i.Category,
-		Qty:           int32(i.Quantity),
+		ItemId:   i.ItemID,
+		Sku:      i.SKU,
+		Name:     i.Name,
+		Category: i.Category,
+		Qty:      int32(i.Quantity),
 		Price: &commonv1.Money{
 			CurrencyCode: i.Currency,
 			Amount:       int64(i.Price * 100),
@@ -149,8 +144,6 @@ func (i *TransactionItem) ToProto() *transactionv1.TransactionItem {
 			CurrencyCode: i.Currency,
 			Amount:       int64(i.Total * 100),
 		},
-		Metadata:  meta,
-		CreatedAt: timestamppb.New(i.CreatedAt),
-		UpdatedAt: timestamppb.New(i.UpdatedAt),
+		Metadata: meta,
 	}
 }
