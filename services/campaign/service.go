@@ -68,7 +68,7 @@ func (s *Service) CreateCampaign(ctx context.Context, req *campaignv1.CreateCamp
 		Description:     req.Description,
 		RewardType:      RewardType(req.RewardType.String()),
 		EligibilityMode: EligibilityMode(req.EligibilityMode.String()),
-		RuleID:          "",
+		RuleID:          id,
 		Status:          CampaignStatusDraft,
 	}
 
@@ -76,6 +76,7 @@ func (s *Service) CreateCampaign(ctx context.Context, req *campaignv1.CreateCamp
 		start := req.StartAt.AsTime()
 		c.StartAt = &start
 	}
+
 	if req.EndAt != nil {
 		end := req.EndAt.AsTime()
 		c.EndAt = &end
@@ -85,6 +86,7 @@ func (s *Service) CreateCampaign(ctx context.Context, req *campaignv1.CreateCamp
 		jsonData, _ := req.RewardValue.MarshalJSON()
 		c.RewardValue = jsonData
 	}
+
 	if req.Metadata != nil {
 		jsonData, _ := req.Metadata.MarshalJSON()
 		c.Metadata = jsonData

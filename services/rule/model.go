@@ -9,6 +9,30 @@ import (
 	"gorm.io/datatypes"
 )
 
+// Registry for allowed triggers (events)
+type RuleTrigger struct {
+	TriggerKey  string         `gorm:"column:trigger_key;primaryKey"`
+	Description string         `gorm:"column:description"`
+	Schema      datatypes.JSON `gorm:"column:schema"`
+	CreatedAt   time.Time      `gorm:"column:created_at"`
+}
+
+// RuleSet groups multiple rules for versioning & caching
+type RuleSet struct {
+	ID          string    `gorm:"column:id;primaryKey"`
+	TenantID    string    `gorm:"column:tenant_id;index"`
+	Name        string    `gorm:"column:name"`
+	Description string    `gorm:"column:description"`
+	Trigger     string    `gorm:"column:trigger;index"`
+	Version     int64     `gorm:"column:version"`
+	Hash        string    `gorm:"column:hash"`
+	IsPublished bool      `gorm:"column:is_published"`
+	CreatedAt   time.Time `gorm:"column:created_at"`
+	UpdatedAt   time.Time `gorm:"column:updated_at"`
+
+	Rules []Rule `gorm:"foreignKey:RuleSetID;constraint:OnDelete:CASCADE"`
+}
+
 // Rule represents a persisted rule definition.
 type Rule struct {
 	RuleID        string         `gorm:"column:rule_id;primaryKey"`
@@ -89,6 +113,26 @@ func (r *Rule) ToProto() (*rulev1.Rule, error) {
 
 	return out, nil
 }
+
+// Fine-grained conditions for visual builder
+type RuleCondition struct {
+	ID       string `gorm:"column:id;primaryKey"`
+	RuleID   string `gorm:"column:rule_id;index"`
+	Field    string `gorm:"column:field"`
+	Operator string `gorm:"column:operator"`
+	Value    string `gorm:"column:value"`
+	JoinType string `gorm:"column:join_type"`
+	Order    int32  `gorm:"column:order_index"`
+}
+
+// Modular rule actions
+// type RuleAction struct {
+// 	ID     string         `gorm:"column:id;primaryKey"`
+// 	RuleID string         `gorm:"column:rule_id;index"`
+// 	Type   string         `gorm:"column:type"`
+// 	Config datatypes.JSON `gorm:"column:config"`
+// 	Order  int32          `gorm:"column:order_index"`
+// }
 
 // RuleAction describes a rule action payload stored as JSON.
 type RuleAction struct {
@@ -305,13 +349,4 @@ func cloneMap(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
-}
-
-type RuleSet struct {
-	TenantID  string    `gorm:"column:tenant_id" json:"tenant_id"`
-	Trigger   string    `gorm:"column:trigger" json:"trigger"`
-	Version   int64     `gorm:"column:version" json:"version"`
-	Hash      string    `gorm:"column:hash" json:"hash"`
-	CreatedAt time.Time `gorm:"column:created_at" json:"created_at"`
-	UpdatedAt time.Time `gorm:"column:updated_at" json:"updated_at"`
 }

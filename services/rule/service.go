@@ -31,36 +31,9 @@ import (
 	"gorm.io/gorm"
 )
 
-type CompiledRule struct {
-	ID   string
-	Rule Rule
-	Prog cel.Program
-}
-
-func (r *CompiledRule) evaluate(ctx map[string]interface{}) (bool, error) {
-	if r.Prog == nil {
-		return false, fmt.Errorf("compiled program is nil for rule %s", r.ID)
-	}
-
-	// Eval di cel-go mengembalikan tiga nilai: Value, Details, Error
-	val, _, err := r.Prog.Eval(ctx)
-	if err != nil {
-		return false, fmt.Errorf("eval failed for rule %s: %w", r.ID, err)
-	}
-
-	// hasil expression di CEL adalah bool
-	matched, ok := val.Value().(bool)
-	if !ok {
-		return false, fmt.Errorf("rule %s did not return boolean", r.ID)
-	}
-
-	return matched, nil
-}
-
 // Cache global: rules & env
 var (
 	rulesByTrigger = sync.Map{} // map[string][]*CompiledRule
-	envCache       = sync.Map{} // map[string]*cel.Env
 	loadGroup      singleflight.Group
 )
 
@@ -399,9 +372,8 @@ func (s *Service) EvaluateRule(ctx context.Context, req *rulev1.EvaluateRuleRequ
 		return nil, status.Error(codes.Internal, "failed to evaluate rule")
 	}
 
-	ctxMap := structToMap(req.GetContext())
-
-	matched, actionValue, evalErr := s.executeRule(rule, ctxMap)
+	attrs := structToMap(req.GetContext())
+	matched, actionValue, evalErr := s.executeRule(rule, attrs)
 	if evalErr != nil {
 		s.logger.Error("rule evaluation failed", zap.String("rule_id", rule.RuleID), zap.Error(evalErr))
 		return nil, status.Error(codes.Internal, "failed to evaluate rule")
@@ -424,15 +396,19 @@ func (s *Service) BatchEvaluate(ctx context.Context, req *rulev1.BatchEvaluateRe
 		return nil, err
 	}
 
-	ctxMap := structToMap(req.GetContext())
+	attrs := structToMap(req.GetContext())
 	trigger := req.Trigger.String()
 
 	// Ambil compiled rules dari cache
-	rules, ok := s.GetRulesByTrigger(tenantID, trigger)
-	if !ok || len(rules) == 0 {
+	rules, err := s.GetCompiledOrRefresh(ctx, tenantID, trigger)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	if len(rules) == 0 {
 		// Singleflight biar concurrent request dengan trigger sama tidak compile bareng
 		_, err, _ := loadGroup.Do(trigger, func() (any, error) {
-			env, err := celengine.GetOrBuildEnv(ctxMap)
+			env, err := celengine.GetOrBuildEnv(attrs)
 			if err != nil {
 				return nil, err
 			}
@@ -452,7 +428,7 @@ func (s *Service) BatchEvaluate(ctx context.Context, req *rulev1.BatchEvaluateRe
 			return nil, status.Errorf(codes.Internal, "failed to compile rules: %v", err)
 		}
 
-		rules, _ = s.GetRulesByTrigger(tenantID, trigger)
+		rules, _ = s.GetCompiledOrRefresh(ctx, tenantID, trigger)
 	}
 
 	// Parallel evaluation
@@ -486,7 +462,7 @@ func (s *Service) BatchEvaluate(ctx context.Context, req *rulev1.BatchEvaluateRe
 			default:
 			}
 
-			matched, err := r.evaluate(ctxMap)
+			matched, err := r.evaluate(attrs)
 			if err != nil {
 				resultCh <- &rulev1.RuleEvaluationResult{
 					RuleId:       r.ID,
@@ -563,8 +539,8 @@ func (s *Service) StreamEvaluate(stream rulev1.RuleService_StreamEvaluateServer)
 			return tenantErr
 		}
 
-		ctxMap := structToMap(req.GetContext())
-		results, evalErr := s.evaluateRulesBatch(stream.Context(), tenantID, req.GetRuleIds(), ctxMap)
+		attrs := structToMap(req.GetContext())
+		results, evalErr := s.evaluateRulesBatch(stream.Context(), tenantID, req.GetRuleIds(), attrs)
 		if evalErr != nil {
 			s.logger.Error("stream evaluation batch failed", zap.Error(evalErr))
 			return status.Error(codes.Internal, "failed to evaluate rules")
@@ -602,7 +578,7 @@ func (s *Service) CompileAndCacheRules(env *cel.Env, rules []Rule) error {
 		}
 
 		trigger := r.Trigger
-		temp[trigger] = append(temp[trigger], &CompiledRule{ID: r.RuleID, Rule: r, Prog: prog})
+		temp[trigger] = append(temp[trigger], &CompiledRule{ID: r.RuleID, Rule: r, Program: prog})
 	}
 
 	for k, v := range temp {
@@ -807,7 +783,7 @@ func (s *Service) startRuleInvalidationSubscriber(ctx context.Context) {
 	}()
 }
 
-func (s *Service) evaluateRulesBatch(ctx context.Context, tenantID string, ruleIDs []string, ctxMap map[string]any) ([]*rulev1.RuleEvaluationResult, error) {
+func (s *Service) evaluateRulesBatch(ctx context.Context, tenantID string, ruleIDs []string, attrs map[string]any) ([]*rulev1.RuleEvaluationResult, error) {
 	results := make([]*rulev1.RuleEvaluationResult, 0)
 
 	if len(ruleIDs) > 0 {
@@ -830,7 +806,7 @@ func (s *Service) evaluateRulesBatch(ctx context.Context, tenantID string, ruleI
 				return nil, err
 			}
 
-			results = append(results, s.evaluateRuleResult(rule, ctxMap))
+			results = append(results, s.evaluateRuleResult(rule, attrs))
 		}
 		return results, nil
 	}
@@ -846,7 +822,7 @@ func (s *Service) evaluateRulesBatch(ctx context.Context, tenantID string, ruleI
 		return nil, err
 	}
 
-	env, err := celengine.GetOrBuildEnv(ctxMap)
+	env, err := celengine.GetOrBuildEnv(attrs)
 	if err != nil {
 		return nil, err
 	}
@@ -861,11 +837,9 @@ func (s *Service) evaluateRulesBatch(ctx context.Context, tenantID string, ruleI
 
 		prog, _ := env.Program(ast)
 		triggerMap[r.Trigger] = append(triggerMap[r.Trigger], &CompiledRule{
-			ID:   r.RuleID,
-			Prog: prog,
+			ID:      r.RuleID,
+			Program: prog,
 		})
-
-		// results = append(results, s.evaluateRuleResult(&r, ctxMap))
 	}
 
 	for k, v := range triggerMap {
@@ -875,13 +849,13 @@ func (s *Service) evaluateRulesBatch(ctx context.Context, tenantID string, ruleI
 	return results, nil
 }
 
-func (s *Service) evaluateRuleResult(rule *Rule, ctxMap map[string]any) *rulev1.RuleEvaluationResult {
+func (s *Service) evaluateRuleResult(rule *Rule, attrs map[string]any) *rulev1.RuleEvaluationResult {
 	result := &rulev1.RuleEvaluationResult{
 		RuleId: rule.RuleID,
 		Status: rulev1.EvaluationStatus_SUCCESS,
 	}
 
-	matched, actionValue, err := s.executeRule(rule, ctxMap)
+	matched, actionValue, err := s.executeRule(rule, attrs)
 	if err != nil {
 		s.logger.Error("rule evaluation failed", zap.String("rule_id", rule.RuleID), zap.String("rule_name", rule.Name), zap.Error(err))
 		result.Status = rulev1.EvaluationStatus_ERROR
@@ -897,14 +871,14 @@ func (s *Service) evaluateRuleResult(rule *Rule, ctxMap map[string]any) *rulev1.
 	return result
 }
 
-func (s *Service) executeRule(rule *Rule, ctxMap map[string]any) (bool, *structpb.Struct, error) {
+func (s *Service) executeRule(rule *Rule, attrs map[string]any) (bool, *structpb.Struct, error) {
 
-	env, err := celengine.GetOrBuildEnv(ctxMap)
+	env, err := celengine.GetOrBuildEnv(attrs)
 	if err != nil {
 		return false, nil, err
 	}
 
-	matched, err := celengine.Evaluate(env, rule.DSLExpression, ctxMap)
+	matched, err := celengine.Evaluate(env, rule.DSLExpression, attrs)
 	if err != nil {
 		return false, nil, err
 	}
@@ -1117,26 +1091,6 @@ func orgIDFromContext(ctx context.Context) (string, error) {
 	}
 
 	return "", status.Error(codes.InvalidArgument, "tenant_id is required")
-}
-
-func encodeCursor(priority int32, ruleID string) string {
-	return fmt.Sprintf("%d:%s", priority, ruleID)
-}
-
-func decodeCursor(cursor string) (int32, string, error) {
-	parts := strings.SplitN(cursor, ":", 2)
-	if len(parts) != 2 {
-		return 0, "", fmt.Errorf("invalid cursor format")
-	}
-	value, err := strconv.ParseInt(parts[0], 10, 32)
-	if err != nil {
-		return 0, "", err
-	}
-	return int32(value), parts[1], nil
-}
-
-func makeRuleKey(tenantID, trigger string) string {
-	return fmt.Sprintf("%s:%s", tenantID, trigger)
 }
 
 func CalcRuleSetHash(rules []Rule) string {

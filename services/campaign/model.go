@@ -1,9 +1,12 @@
 package campaign
 
 import (
+	"encoding/json"
+	"fmt"
 	"time"
 
 	campaignv1 "github.com/smallbiznis/go-genproto/smallbiznis/campaign/v1"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"gorm.io/datatypes"
@@ -37,12 +40,12 @@ type Campaign struct {
 	Code            string          `gorm:"column:code"`
 	Name            string          `gorm:"column:name;type:varchar(255);not null"`
 	Description     string          `gorm:"column:description;type:text"`
-	RewardType      RewardType      `gorm:"column:reward_type;type:varchar(50);not null;default:'VOUCHER'"`
 	EligibilityMode EligibilityMode `gorm:"column:eligibility_mode;type:varchar(50);not null;default:'RULE'"`
 	RuleID          string          `gorm:"column:rule_id"`
 	Status          CampaignStatus  `gorm:"column:status;type:varchar(50);not null;default:'DRAFT'"`
 	StartAt         *time.Time      `gorm:"column:start_at"`
 	EndAt           *time.Time      `gorm:"column:end_at"`
+	RewardType      RewardType      `gorm:"column:reward_type;type:varchar(50);not null;default:'VOUCHER'"`
 	RewardValue     datatypes.JSON  `gorm:"column:reward_value;type:jsonb"`
 	Metadata        datatypes.JSON  `gorm:"column:metadata;type:jsonb"`
 	CreatedAt       time.Time       `gorm:"column:created_at;autoCreateTime"`
@@ -69,15 +72,8 @@ func (c *Campaign) IsActive(now time.Time) bool {
 
 // ToProto converts the model to protobuf Campaign message.
 func (c *Campaign) ToProto() (*campaignv1.Campaign, error) {
-	var rewardStruct, metaStruct *structpb.Struct
+	var metaStruct *structpb.Struct
 	var err error
-
-	if len(c.RewardValue) > 0 {
-		rewardStruct = &structpb.Struct{}
-		if err = rewardStruct.UnmarshalJSON(c.RewardValue); err != nil {
-			return nil, err
-		}
-	}
 
 	if len(c.Metadata) > 0 {
 		metaStruct = &structpb.Struct{}
@@ -86,7 +82,7 @@ func (c *Campaign) ToProto() (*campaignv1.Campaign, error) {
 		}
 	}
 
-	return &campaignv1.Campaign{
+	cmp := &campaignv1.Campaign{
 		CampaignId:              c.CampaignID,
 		TenantId:                c.TenantID,
 		CampaignName:            c.Name,
@@ -98,11 +94,46 @@ func (c *Campaign) ToProto() (*campaignv1.Campaign, error) {
 		Status:                  toProtoStatus(c.Status),
 		StartAt:                 toProtoTimestamp(c.StartAt),
 		EndAt:                   toProtoTimestamp(c.EndAt),
-		RewardValue:             rewardStruct,
 		Metadata:                metaStruct,
 		CreatedAt:               toProtoTimestamp(&c.CreatedAt),
 		UpdatedAt:               toProtoTimestamp(&c.UpdatedAt),
-	}, nil
+	}
+
+	// Parse reward_value berdasarkan reward_type
+	switch c.RewardType {
+	case RewardTypeVoucher:
+		if len(c.RewardValue) > 0 {
+			var vr struct {
+				VoucherReward *campaignv1.VoucherReward `json:"voucher_reward"`
+			}
+			if err := json.Unmarshal(c.RewardValue, &vr); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal voucher_reward: %w", err)
+			}
+
+			zap.L().Debug("voucher reward", zap.Any("voucher_reward", vr))
+
+			if vr.VoucherReward != nil {
+				cmp.RewardValue = &campaignv1.Campaign_VoucherReward{
+					VoucherReward: vr.VoucherReward,
+				}
+			}
+		}
+
+	// (opsional) case lain untuk POINT / CASHBACK
+	case RewardTypePoint:
+		var pr struct {
+			PointReward *campaignv1.PointReward `json:"point_reward"`
+		}
+		if len(c.RewardValue) > 0 {
+			if err := json.Unmarshal(c.RewardValue, &pr); err == nil && pr.PointReward != nil {
+				cmp.RewardValue = &campaignv1.Campaign_PointReward{
+					PointReward: pr.PointReward,
+				}
+			}
+		}
+	}
+
+	return cmp, nil
 }
 
 // ========================================================
@@ -112,6 +143,8 @@ func (c *Campaign) ToProto() (*campaignv1.Campaign, error) {
 func toProtoRewardType(rt RewardType) campaignv1.CampaignRewardType {
 	switch rt {
 	case RewardTypePoint:
+		return campaignv1.CampaignRewardType_POINT
+	case RewardTypeVoucher:
 		return campaignv1.CampaignRewardType_VOUCHER
 	case RewardTypeCashback:
 		return campaignv1.CampaignRewardType_CASHBACK

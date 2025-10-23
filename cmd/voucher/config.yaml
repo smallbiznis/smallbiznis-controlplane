@@ -55,6 +55,13 @@ DATABASE:
     CONN_MAX_LIFETIME: 1h
     CONN_MAX_IDLE_TIME: 1h
 
+REDIS:
+  ADDR: redis:6379
+  PASSWORD: ''
+  DB: 0
+  POOL_SIZE: 10
+  POOL_TIMEOUT: 30s
+
 SESSION:
   NAME: _SID # default _SID
   TYPE: cookie # cookie, redis

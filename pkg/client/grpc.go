@@ -6,6 +6,7 @@ import (
 
 	"smallbiznis-controlplane/pkg/config"
 
+	campaignv1 "github.com/smallbiznis/go-genproto/smallbiznis/campaign/v1"
 	tenantv1 "github.com/smallbiznis/go-genproto/smallbiznis/controlplane/tenant/v1"
 	ledgerv1 "github.com/smallbiznis/go-genproto/smallbiznis/ledger/v1"
 	loyaltyv1 "github.com/smallbiznis/go-genproto/smallbiznis/loyalty/v1"
@@ -109,4 +110,13 @@ func NewLoyaltyClient(lc fx.Lifecycle, cfg *config.Config) (loyaltyv1.PointServi
 		return nil, err
 	}
 	return loyaltyv1.NewPointServiceClient(conn), nil
+}
+
+func NewCampaignClient(lc fx.Lifecycle, cfg *config.Config) (campaignv1.CampaignServiceClient, error) {
+	conn, err := newClient(lc, "campaign:4317")
+	if err != nil {
+		zap.L().Error("failed to connected campaign", zap.Error(err), zap.String("url", "campaign:4317"))
+		return nil, err
+	}
+	return campaignv1.NewCampaignServiceClient(conn), nil
 }

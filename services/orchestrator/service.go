@@ -166,9 +166,11 @@ func (s *Service) ProcessEarning(ctx context.Context, req *orchestratorv1.Proces
 					TenantId:   req.GetTenantId(),
 					UserId:     req.GetUserId(),
 					CampaignId: campaignID,
+					Count:      count,
 				})
+
 				status := orchestratorv1.EarningStatus_SUCCESS
-				msg := fmt.Sprintf("Issued %d vouchers", len(resp.GetVouchers()))
+				msg := fmt.Sprintf("Issued %d vouchers", len(resp.GetIssuances()))
 				if err != nil {
 					status = orchestratorv1.EarningStatus_FAILED
 					msg = err.Error()

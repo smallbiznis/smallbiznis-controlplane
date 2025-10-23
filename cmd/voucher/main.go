@@ -11,6 +11,7 @@ import (
 	"go.uber.org/fx/fxevent"
 	"go.uber.org/zap"
 
+	"smallbiznis-controlplane/pkg/client"
 	"smallbiznis-controlplane/pkg/config"
 	"smallbiznis-controlplane/pkg/db"
 	"smallbiznis-controlplane/pkg/httpapi"
@@ -33,6 +34,9 @@ func main() {
 			provideTracerProvider,
 			provideMeterProvider,
 			provideSnowflakeNode,
+		),
+		fx.Provide(
+			client.NewCampaignClient,
 		),
 		httpapi.Module,
 		voucher.Module,
