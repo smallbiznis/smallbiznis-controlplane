@@ -2,18 +2,27 @@ package rule
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"smallbiznis-controlplane/pkg/celengine"
+	"smallbiznis-controlplane/pkg/repository"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/snowflake"
+	"github.com/google/cel-go/cel"
+	"github.com/redis/go-redis/v9"
 	rulev1 "github.com/smallbiznis/go-genproto/smallbiznis/rule/v1"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
@@ -22,10 +31,37 @@ import (
 	"gorm.io/gorm"
 )
 
-const (
-	metadataTenantIDKey = "x-tenant-id"
-	defaultPageSize     = 20
-	maxPageSize         = 100
+type CompiledRule struct {
+	ID   string
+	Rule Rule
+	Prog cel.Program
+}
+
+func (r *CompiledRule) evaluate(ctx map[string]interface{}) (bool, error) {
+	if r.Prog == nil {
+		return false, fmt.Errorf("compiled program is nil for rule %s", r.ID)
+	}
+
+	// Eval di cel-go mengembalikan tiga nilai: Value, Details, Error
+	val, _, err := r.Prog.Eval(ctx)
+	if err != nil {
+		return false, fmt.Errorf("eval failed for rule %s: %w", r.ID, err)
+	}
+
+	// hasil expression di CEL adalah bool
+	matched, ok := val.Value().(bool)
+	if !ok {
+		return false, fmt.Errorf("rule %s did not return boolean", r.ID)
+	}
+
+	return matched, nil
+}
+
+// Cache global: rules & env
+var (
+	rulesByTrigger = sync.Map{} // map[string][]*CompiledRule
+	envCache       = sync.Map{} // map[string]*cel.Env
+	loadGroup      singleflight.Group
 )
 
 // Service implements rulev1.RuleServiceServer.
@@ -34,23 +70,30 @@ type Service struct {
 	grpc_health_v1.UnimplementedHealthServer
 
 	db     *gorm.DB
-	repo   Repository
-	logger *zap.Logger
+	rdb    *redis.Client
 	node   *snowflake.Node
+	logger *zap.Logger
+
+	cache *RuleCache
+
+	repo    Repository
+	ruleSet repository.Repository[RuleSet]
 }
 
 // ServiceParams defines dependencies for Service construction.
 type ServiceParams struct {
 	fx.In
 
-	DB         *gorm.DB
+	DB     *gorm.DB
+	RDB    *redis.Client
+	Node   *snowflake.Node
+	Logger *zap.Logger
+
 	Repository Repository
-	Logger     *zap.Logger
-	Node       *snowflake.Node
 }
 
 // NewService constructs a new Service instance.
-func NewService(p ServiceParams) *Service {
+func NewService(lc fx.Lifecycle, p ServiceParams) *Service {
 	logger := p.Logger
 	if logger == nil {
 		logger = zap.NewNop()
@@ -60,12 +103,29 @@ func NewService(p ServiceParams) *Service {
 		panic("rule service requires repository dependency")
 	}
 
-	return &Service{
+	svc := &Service{
 		db:     p.DB,
-		repo:   p.Repository,
-		logger: logger,
+		rdb:    p.RDB,
 		node:   p.Node,
+		logger: logger,
+
+		cache: NewRuleCache(10 * time.Minute),
+
+		repo:    p.Repository,
+		ruleSet: repository.ProvideStore[RuleSet](p.DB),
 	}
+
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			go svc.startRuleInvalidationSubscriber(ctx)
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			return nil
+		},
+	})
+
+	return svc
 }
 
 // CreateRule handles the CreateRule RPC.
@@ -170,10 +230,11 @@ func (s *Service) ListRules(ctx context.Context, req *rulev1.ListRulesRequest) (
 
 	limit := int(req.GetLimit())
 	if limit <= 0 {
-		limit = defaultPageSize
+		limit = 10
 	}
-	if limit > maxPageSize {
-		limit = maxPageSize
+
+	if limit > 250 {
+		limit = 250
 	}
 
 	cursor := strings.TrimSpace(req.GetCursor())
@@ -194,7 +255,7 @@ func (s *Service) ListRules(ctx context.Context, req *rulev1.ListRulesRequest) (
 		AfterRuleID:     afterRuleID,
 		Limit:           limit + 1,
 		IncludeInactive: false,
-		Triggers:        []rulev1.RuleTriggerType{},
+		Triggers:        []string{},
 	}
 
 	rules, err := s.repo.List(ctx, tenantID, params)
@@ -364,44 +425,125 @@ func (s *Service) BatchEvaluate(ctx context.Context, req *rulev1.BatchEvaluateRe
 	}
 
 	ctxMap := structToMap(req.GetContext())
+	trigger := req.Trigger.String()
 
-	if len(req.RuleIds) == 0 {
-		rs, err := s.repo.List(ctx, req.GetTenantId(), ListParams{
-			IncludeInactive: false,
-			Triggers: []rulev1.RuleTriggerType{
-				req.Trigger,
-			},
+	// Ambil compiled rules dari cache
+	rules, ok := s.GetRulesByTrigger(tenantID, trigger)
+	if !ok || len(rules) == 0 {
+		// Singleflight biar concurrent request dengan trigger sama tidak compile bareng
+		_, err, _ := loadGroup.Do(trigger, func() (any, error) {
+			env, err := celengine.GetOrBuildEnv(ctxMap)
+			if err != nil {
+				return nil, err
+			}
+
+			allRules, err := s.repo.List(ctx, tenantID, ListParams{
+				IncludeInactive: false,
+				Triggers:        []string{req.Trigger.String()},
+			})
+			if err != nil {
+				return nil, err
+			}
+
+			return nil, s.CompileAndCacheRules(env, allRules)
 		})
 		if err != nil {
-			return nil, status.Error(codes.Internal, "failed to get active rules")
+			s.logger.Error("failed to compile rules", zap.Error(err))
+			return nil, status.Errorf(codes.Internal, "failed to compile rules: %v", err)
 		}
 
-		for _, v := range rs {
-			req.RuleIds = append(req.RuleIds, v.RuleID)
-		}
+		rules, _ = s.GetRulesByTrigger(tenantID, trigger)
 	}
 
-	zap.L().Info("Total RuleIds", zap.Strings("rule_ids", req.GetRuleIds()))
+	// Parallel evaluation
+	results := make([]*rulev1.RuleEvaluationResult, 0, len(rules))
+	resultCh := make(chan *rulev1.RuleEvaluationResult, len(rules))
+	sem := make(chan struct{}, 10) // concurrency limit
+	var wg sync.WaitGroup
 
-	results, evalErr := s.evaluateRulesBatch(ctx, tenantID, req.GetRuleIds(), ctxMap)
-	if evalErr != nil {
-		s.logger.Error("batch evaluation failed", zap.Error(evalErr))
-		return nil, status.Error(codes.Internal, "failed to evaluate rules")
+	for _, compiled := range rules {
+		sem <- struct{}{}
+		wg.Add(1)
+
+		go func(r *CompiledRule) {
+			defer func() {
+				<-sem
+				wg.Done()
+			}()
+
+			// Context cancel / timeout per rule
+			ruleCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+			defer cancel()
+
+			select {
+			case <-ruleCtx.Done():
+				resultCh <- &rulev1.RuleEvaluationResult{
+					RuleId:       r.ID,
+					Status:       rulev1.EvaluationStatus_ERROR,
+					ErrorMessage: "context canceled or timeout",
+				}
+				return
+			default:
+			}
+
+			matched, err := r.evaluate(ctxMap)
+			if err != nil {
+				resultCh <- &rulev1.RuleEvaluationResult{
+					RuleId:       r.ID,
+					Status:       rulev1.EvaluationStatus_ERROR,
+					ErrorMessage: err.Error(),
+				}
+				return
+			}
+
+			if matched {
+				acts, _ := r.Rule.ActionsList()
+				summary, err := s.buildActionSummary(acts)
+				if err != nil {
+					s.logger.Error("failed to build action summary", zap.Error(err))
+				}
+
+				resultCh <- &rulev1.RuleEvaluationResult{
+					RuleId:      r.ID,
+					Matched:     matched,
+					ActionValue: summary,
+					Status:      rulev1.EvaluationStatus_SUCCESS,
+				}
+			}
+
+		}(compiled)
 	}
 
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	for r := range resultCh {
+		results = append(results, r)
+	}
+
+	// 🔹 Hitung hasil evaluasi
 	var totalMatched int32
-	for _, res := range results {
-		if res.GetStatus() == rulev1.EvaluationStatus_SUCCESS && res.GetMatched() {
+	for _, r := range results {
+		if r.Matched {
 			totalMatched++
 		}
 	}
 
+	s.logger.Info("batch evaluation completed",
+		zap.String("tenant_id", tenantID),
+		zap.String("trigger", trigger),
+		zap.Int("total_rules", len(results)),
+		zap.Int32("total_matched", totalMatched),
+	)
+
 	return &rulev1.BatchEvaluateResponse{
+		TenantId:     tenantID,
 		Results:      results,
 		TotalMatched: totalMatched,
 		TotalRules:   int32(len(results)),
 		ExecutionId:  s.newExecutionID(),
-		TenantId:     tenantID,
 	}, nil
 }
 
@@ -436,6 +578,235 @@ func (s *Service) StreamEvaluate(stream rulev1.RuleService_StreamEvaluateServer)
 	}
 }
 
+func (s *Service) CompileAndCacheRules(env *cel.Env, rules []Rule) error {
+	if env == nil {
+		return fmt.Errorf("cel environment is nil")
+	}
+
+	temp := make(map[string][]*CompiledRule)
+	for _, r := range rules {
+		if strings.TrimSpace(r.DSLExpression) == "" {
+			continue
+		}
+
+		ast, issues := env.Compile(r.DSLExpression)
+		if issues != nil && issues.Err() != nil {
+			s.logger.Warn("invalid rule expr", zap.String("rule_id", r.RuleID), zap.Error(issues.Err()))
+			continue
+		}
+
+		prog, err := env.Program(ast)
+		if err != nil {
+			s.logger.Error("failed to build cel program", zap.String("rule_id", r.RuleID), zap.Error(err))
+			continue
+		}
+
+		trigger := r.Trigger
+		temp[trigger] = append(temp[trigger], &CompiledRule{ID: r.RuleID, Rule: r, Prog: prog})
+	}
+
+	for k, v := range temp {
+		key := makeRuleKey(rules[0].TenantID, k)
+		rulesByTrigger.Store(key, v)
+		s.logger.Info("compiled & cached rules", zap.String("trigger", k), zap.Int("count", len(v)))
+	}
+
+	return nil
+}
+
+func (s *Service) GetRulesByTrigger(tenantID, trigger string) ([]*CompiledRule, bool) {
+	key := makeRuleKey(tenantID, trigger)
+	v, ok := rulesByTrigger.Load(key)
+	if !ok {
+		return nil, false
+	}
+	return v.([]*CompiledRule), true
+}
+
+func (s *Service) GetCompiledOrRefresh(ctx context.Context, tenantID, trigger string) ([]*CompiledRule, error) {
+	key := RuleSetKey{TenantID: tenantID, Trigger: trigger}
+	if cached, ok := s.cache.Get(key); ok && cached != nil && len(cached.Rules) > 0 {
+		cacheHits.Inc()
+		// Non-blocking version check setiap N detik (anti hot-path call Redis tiap request)
+		if time.Since(cached.UpdatedAt) > 2*time.Second {
+			go s.softVersionCheck(context.Background(), key, cached.Version, cached.Hash)
+		}
+		return cached.Rules, nil
+	} else {
+		cacheMiss.Inc()
+	}
+
+	// Cold start → blocking refresh (sekali, berkat singleflight)
+	if err := s.refreshRuleSet(ctx, key, 0, ""); err != nil {
+		return nil, err
+	}
+	if fresh, ok := s.cache.Get(key); ok && fresh != nil {
+		return fresh.Rules, nil
+	}
+	return nil, status.Error(codes.NotFound, "no compiled rules available")
+}
+
+func (s *Service) softVersionCheck(ctx context.Context, key RuleSetKey, localVer int64, localHash string) {
+	verKey := fmt.Sprintf("ruleset:v2:%s:%s:ver", key.TenantID, key.Trigger)
+	hasKey := fmt.Sprintf("ruleset:v2:%s:%s:hash", key.TenantID, key.Trigger)
+	redisVer, _ := s.rdb.Get(ctx, verKey).Int64()
+	redisHash, _ := s.rdb.Get(ctx, hasKey).Result()
+	if redisVer > localVer || (redisHash != "" && redisHash != localHash) {
+		_ = s.refreshRuleSet(ctx, key, redisVer, redisHash) // revalidate async
+	}
+}
+
+func (s *Service) refreshRuleSet(ctx context.Context, key RuleSetKey, expectedVer int64, expectedHash string) error {
+	// Hindari thundering herd
+	_, err, _ := s.cache.group.Do(fmt.Sprintf("%s:%s", key.TenantID, key.Trigger), func() (any, error) {
+		// Double-check latest Redis version/hash
+		verKey := fmt.Sprintf("ruleset:v2:%s:%s:ver", key.TenantID, key.Trigger)
+		hasKey := fmt.Sprintf("ruleset:v2:%s:%s:hash", key.TenantID, key.Trigger)
+
+		curVer, _ := s.rdb.Get(ctx, verKey).Int64()
+		curHash, _ := s.rdb.Get(ctx, hasKey).Result()
+
+		// Pakai yang paling baru dari Redis/param
+		if curVer == 0 {
+			curVer = expectedVer
+		}
+		if curHash == "" {
+			curHash = expectedHash
+		}
+
+		// 1) Load rules dari DB
+		rules, err := s.repo.List(ctx, key.TenantID, ListParams{
+			IncludeInactive: false,
+			Triggers:        []string{key.Trigger},
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		// 2) Recalc hash untuk verifikasi
+		hash := CalcRuleSetHash(rules)
+		if curHash != "" && curHash != hash {
+			// Redis hash tidak sinkron dengan DB → update Redis biar konsisten
+			pipe := s.rdb.TxPipeline()
+			pipe.Set(ctx, hasKey, hash, 0)
+			if curVer == 0 {
+				pipe.Incr(ctx, verKey) // kalau belum ada, bump minimal sekali
+			}
+			_, _ = pipe.Exec(ctx)
+		}
+
+		// 3) Compile
+		env, err := celengine.GetOrBuildEnv(nil) // atau dari context contoh
+		if err != nil {
+			return nil, err
+		}
+
+		if err := s.CompileAndCacheRules(env, rules); err != nil {
+			return nil, err
+		}
+
+		// 4) Simpan cache lokal lengkap versi & hash
+		comp, _ := s.GetRulesByTrigger(key.TenantID, key.Trigger) // ambil hasil compile
+		s.cache.Set(key, &CompiledRuleSet{
+			Version:   curVer,
+			Hash:      hash,
+			Rules:     comp,
+			UpdatedAt: time.Now(),
+		})
+		return nil, nil
+	})
+	return err
+}
+
+func (s *Service) bumpVersionAndBroadcast(ctx context.Context, tenantID, trigger string) error {
+	// 1) Ambil rules terbaru & normalisasi → hash
+	rules, err := s.repo.List(ctx, tenantID, ListParams{
+		IncludeInactive: false,
+		Triggers:        []string{trigger},
+	})
+	if err != nil {
+		return err
+	}
+
+	hash := CalcRuleSetHash(rules) // SHA256 dari "rule_id|priority|dsl|actions|..."
+	verKey := fmt.Sprintf("ruleset:v2:%s:%s:ver", tenantID, trigger)
+	hasKey := fmt.Sprintf("ruleset:v2:%s:%s:hash", tenantID, trigger)
+
+	// 2) Cek hash lama agar idempotent
+	oldHash, _ := s.rdb.Get(ctx, hasKey).Result()
+	if oldHash == hash {
+		// Tidak ada perubahan material → tidak perlu broadcast
+		return nil
+	}
+
+	// 3) Bump version di Redis (atomic)
+	ver, err := s.rdb.Incr(ctx, verKey).Result()
+	if err != nil {
+		return err
+	}
+
+	if err := s.rdb.Set(ctx, hasKey, hash, 0).Err(); err != nil {
+		return err
+	}
+
+	// 4) Publish event
+	msg := RuleSet{
+		TenantID: tenantID,
+		Trigger:  trigger,
+		Version:  ver,
+		Hash:     hash,
+	}
+	payload, _ := json.Marshal(msg)
+	if err := s.rdb.Publish(ctx, "chan:ruleset:v2:invalidate", payload).Err(); err != nil {
+		return err
+	}
+
+	// 5) (Opsional) update table rule_sets untuk audit
+	_ = s.ruleSet.Save(ctx, msg)
+
+	return nil
+}
+
+func (s *Service) startRuleInvalidationSubscriber(ctx context.Context) {
+	go func() {
+		sub := s.rdb.Subscribe(ctx, "chan:ruleset:v2:invalidate")
+		ch := sub.Channel()
+		for {
+			select {
+			case <-ctx.Done():
+				_ = sub.Close()
+				return
+			case m := <-ch:
+				if m == nil {
+					continue
+				}
+				var evt struct {
+					TenantID string `json:"tenant_id"`
+					Trigger  string `json:"trigger"`
+					Version  int64  `json:"version"`
+					Hash     string `json:"hash"`
+				}
+				if err := json.Unmarshal([]byte(m.Payload), &evt); err != nil {
+					s.logger.Warn("invalid invalidate payload", zap.Error(err))
+					continue
+				}
+
+				key := RuleSetKey{TenantID: evt.TenantID, Trigger: evt.Trigger}
+				s.cache.Invalidate(key)
+
+				// Prewarm async (tidak blok request)
+				go func() {
+					if err := s.refreshRuleSet(context.Background(), key, evt.Version, evt.Hash); err != nil {
+						s.logger.Error("prewarm failed", zap.Error(err), zap.Any("key", key))
+					}
+				}()
+
+				s.logger.Info("ruleset invalidated", zap.Any("key", key), zap.Int64("new_version", evt.Version))
+			}
+		}
+	}()
+}
+
 func (s *Service) evaluateRulesBatch(ctx context.Context, tenantID string, ruleIDs []string, ctxMap map[string]any) ([]*rulev1.RuleEvaluationResult, error) {
 	results := make([]*rulev1.RuleEvaluationResult, 0)
 
@@ -467,7 +838,7 @@ func (s *Service) evaluateRulesBatch(ctx context.Context, tenantID string, ruleI
 	listParams := ListParams{
 		Limit:           0,
 		IncludeInactive: false,
-		Triggers:        []rulev1.RuleTriggerType{},
+		Triggers:        []string{},
 	}
 
 	rules, err := s.repo.List(ctx, tenantID, listParams)
@@ -475,8 +846,30 @@ func (s *Service) evaluateRulesBatch(ctx context.Context, tenantID string, ruleI
 		return nil, err
 	}
 
-	for i := range rules {
-		results = append(results, s.evaluateRuleResult(&rules[i], ctxMap))
+	env, err := celengine.GetOrBuildEnv(ctxMap)
+	if err != nil {
+		return nil, err
+	}
+
+	triggerMap := map[string][]*CompiledRule{}
+	for _, r := range rules {
+		ast, issues := env.Compile(r.DSLExpression)
+		if issues != nil && issues.Err() != nil {
+			zap.L().Warn("invalid rule expr", zap.String("rule_id", r.RuleID), zap.Error(issues.Err()))
+			continue
+		}
+
+		prog, _ := env.Program(ast)
+		triggerMap[r.Trigger] = append(triggerMap[r.Trigger], &CompiledRule{
+			ID:   r.RuleID,
+			Prog: prog,
+		})
+
+		// results = append(results, s.evaluateRuleResult(&r, ctxMap))
+	}
+
+	for k, v := range triggerMap {
+		rulesByTrigger.Store(k, v)
 	}
 
 	return results, nil
@@ -506,7 +899,7 @@ func (s *Service) evaluateRuleResult(rule *Rule, ctxMap map[string]any) *rulev1.
 
 func (s *Service) executeRule(rule *Rule, ctxMap map[string]any) (bool, *structpb.Struct, error) {
 
-	env, err := celengine.BuildCelEnvFromAttributes(ctxMap)
+	env, err := celengine.GetOrBuildEnv(ctxMap)
 	if err != nil {
 		return false, nil, err
 	}
@@ -525,7 +918,7 @@ func (s *Service) executeRule(rule *Rule, ctxMap map[string]any) (bool, *structp
 		return false, nil, err
 	}
 
-	summary, err := buildActionSummary(actions)
+	summary, err := s.buildActionSummary(actions)
 	if err != nil {
 		return false, nil, err
 	}
@@ -533,7 +926,7 @@ func (s *Service) executeRule(rule *Rule, ctxMap map[string]any) (bool, *structp
 	return true, summary, nil
 }
 
-func buildActionSummary(actions []RuleAction) (*structpb.Struct, error) {
+func (s *Service) buildActionSummary(actions []RuleAction) (*structpb.Struct, error) {
 	if len(actions) == 0 {
 		return nil, nil
 	}
@@ -624,6 +1017,7 @@ func buildActionSummary(actions []RuleAction) (*structpb.Struct, error) {
 		"actions":       actionEntries,
 		"actions_count": len(actionEntries),
 		"generated_at":  time.Now().UTC().Format(time.RFC3339),
+		"execution_id":  s.newExecutionID(),
 	}
 
 	if totalPoints != 0 {
@@ -713,7 +1107,7 @@ func orgIDFromContext(ctx context.Context) (string, error) {
 		return "", status.Error(codes.InvalidArgument, "tenant_id is required")
 	}
 
-	values := md.Get(metadataTenantIDKey)
+	values := md.Get("X-Tenant-ID")
 	if len(values) == 0 {
 		return "", status.Error(codes.InvalidArgument, "tenant_id is required")
 	}
@@ -739,4 +1133,24 @@ func decodeCursor(cursor string) (int32, string, error) {
 		return 0, "", err
 	}
 	return int32(value), parts[1], nil
+}
+
+func makeRuleKey(tenantID, trigger string) string {
+	return fmt.Sprintf("%s:%s", tenantID, trigger)
+}
+
+func CalcRuleSetHash(rules []Rule) string {
+	h := sha256.New()
+	sort.Slice(rules, func(i, j int) bool { return rules[i].Priority < rules[j].Priority })
+	for _, r := range rules {
+		io.WriteString(h, r.RuleID)
+		io.WriteString(h, "|")
+		io.WriteString(h, strconv.Itoa(int(r.Priority)))
+		io.WriteString(h, "|")
+		io.WriteString(h, r.DSLExpression)
+		io.WriteString(h, "|")
+		io.WriteString(h, strings.TrimSpace(string(r.Actions))) // JSON canonicalized kalau bisa
+		io.WriteString(h, ";")
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }

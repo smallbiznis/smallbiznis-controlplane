@@ -13,7 +13,7 @@ type ListParams struct {
 	AfterRuleID     string
 	Limit           int
 	IncludeInactive bool
-	Triggers        []rulev1.RuleTriggerType
+	Triggers        []string
 }
 
 // Repository describes database operations available for rules.

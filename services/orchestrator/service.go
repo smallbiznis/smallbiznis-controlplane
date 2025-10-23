@@ -92,7 +92,7 @@ func (s *Service) ProcessEarning(ctx context.Context, req *orchestratorv1.Proces
 		return nil, err
 	}
 
-	zapLog.Debug("Result", zap.Any("result", ruleResp))
+	zap.L().Debug("Result", zap.Any("result", ruleResp.Results))
 
 	results := []*orchestratorv1.EarningResult{}
 
@@ -119,6 +119,7 @@ func (s *Service) ProcessEarning(ctx context.Context, req *orchestratorv1.Proces
 
 			// 🪙 REWARD POINT
 			case rulev1.RuleActionType_REWARD_POINT.String():
+				campaignID := fmt.Sprint(act["campaign_id"])
 				points := toInt64(act["points"])
 				ref := fmt.Sprint(act["reference"])
 				if ref == "" {
@@ -129,6 +130,7 @@ func (s *Service) ProcessEarning(ctx context.Context, req *orchestratorv1.Proces
 				_, err := s.loyalty.AddPoint(ctx, &loyaltyv1.AddPointsRequest{
 					TenantId:    req.GetTenantId(),
 					UserId:      req.GetUserId(),
+					CampaignId:  campaignID,
 					RuleId:      r.GetRuleId(),
 					Points:      points,
 					Description: ref,
@@ -252,8 +254,6 @@ func (s *Service) buildContext(ctx context.Context, req *orchestratorv1.ProcessE
 	default:
 		attrMap["event_type"] = "unknown"
 	}
-
-	zapLog.Debug("attributes", zap.Any("attr", attrMap))
 
 	contextStruct, err := structpb.NewStruct(attrMap)
 	if err != nil {

@@ -306,3 +306,12 @@ func cloneMap(in map[string]string) map[string]string {
 	}
 	return out
 }
+
+type RuleSet struct {
+	TenantID  string    `gorm:"column:tenant_id" json:"tenant_id"`
+	Trigger   string    `gorm:"column:trigger" json:"trigger"`
+	Version   int64     `gorm:"column:version" json:"version"`
+	Hash      string    `gorm:"column:hash" json:"hash"`
+	CreatedAt time.Time `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt time.Time `gorm:"column:updated_at" json:"updated_at"`
+}

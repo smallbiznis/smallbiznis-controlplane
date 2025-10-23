@@ -14,6 +14,7 @@ type Repository[T any] interface {
 	FindOne(ctx context.Context, query *T, opts ...option.QueryOption) (*T, error)
 	Create(ctx context.Context, resource *T) error
 	Update(ctx context.Context, resourceID string, resource any) error
+	Save(ctx context.Context, resource any) error
 	// Delete(ctx context.Context, resourceID string) error
 	BatchCreate(ctx context.Context, resources []*T) error
 	BatchUpdate(ctx context.Context, resources []*T) error

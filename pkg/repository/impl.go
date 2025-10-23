@@ -45,6 +45,10 @@ func (r *store[T]) Create(ctx context.Context, resource *T) error {
 	return r.db.WithContext(ctx).Create(resource).Error
 }
 
+func (r *store[T]) Save(ctx context.Context, resource any) error {
+	return r.db.WithContext(ctx).Save(resource).Error
+}
+
 func (r *store[T]) Update(ctx context.Context, resourceID string, resource any) error {
 	return r.db.WithContext(ctx).Model(new(T)).Where("id = ?", resourceID).Updates(resource).Error
 }

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
+	"strings"
 	"sync"
 
 	"go.uber.org/zap"
@@ -11,19 +13,28 @@ import (
 	"github.com/google/cel-go/cel"
 )
 
-var envCache = sync.Map{}
+var (
+	envCache = sync.Map{} // map[string]*cel.Env
+)
 
 func GetOrBuildEnv(attrs map[string]interface{}) (*cel.Env, error) {
-	key := reflect.TypeOf(attrs).String()
+	keys := make([]string, 0, len(attrs))
+	for k := range attrs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	key := strings.Join(keys, ",")
+
 	if v, ok := envCache.Load(key); ok {
 		return v.(*cel.Env), nil
 	}
 
 	env, err := BuildCelEnvFromAttributes(attrs)
-	if err == nil {
-		envCache.Store(key, env)
+	if err != nil {
+		return nil, err
 	}
 
+	envCache.Store(key, env)
 	return env, err
 }
 
